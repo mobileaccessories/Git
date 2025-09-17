@@ -421,7 +421,7 @@
     
     function generateQRCode(orderNumber, accessCode) {
       // Simple QR code generation using Google Charts API
-      const qrUrl = `https://chart.googleapis.com/chart?cht=qr&chs=180x180&chl=${encodeURIComponent(orderNumber + '|' + accessCode)}`;
+      const qrUrl = `https://script.google.com/macros/s/AKfycbxRZo0DLNUk6AZFpQwAVaOrCo6EeWdcnLR_AuQfwAkKDIglxmSlqhp-M2EotqslU3ijhQ/exec/chart?cht=qr&chs=180x180&chl=${encodeURIComponent(orderNumber + '|' + accessCode)}`;
       document.getElementById('qrCode').innerHTML = `<img src="${qrUrl}" alt="QR Code">`;
     }
     
