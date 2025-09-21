@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Test Apps Script</title>
+  <title>JSONP Example</title>
 </head>
 <body>
   <input id="name" placeholder="Enter your name" />
@@ -9,25 +9,25 @@
   <p id="result"></p>
 
   <script>
-    async function send() {
+    function send() {
       const name = document.getElementById('name').value;
-      const result = document.getElementById('result');
+      const callbackName = 'handleResponse';
 
-      try {
-        const response = await fetch("https://script.google.com/macros/s/AKfycbxlYFKVIS-Ylbgc8i5rzZbQ3AOyp0wGqxGa8Ji7WR--BeenwZEeb9hQJJg5gyXn5yK2ig/exec", {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name }),
-          mode: 'cors'
-        });
+      // Remove old script if exists
+      const oldScript = document.getElementById('jsonpScript');
+      if (oldScript) oldScript.remove();
 
-        if (!response.ok) throw new Error('HTTP error ' + response.status);
+      // Define the callback function globally
+      window[callbackName] = function(data) {
+        document.getElementById('result').textContent = data.message;
+        delete window[callbackName];
+      };
 
-        const data = await response.json();
-        result.textContent = data.message;
-      } catch (e) {
-        result.textContent = 'Error: ' + e.message;
-      }
+      // Create script tag for JSONP
+      const script = document.createElement('script');
+      script.id = 'jsonpScript';
+      script.src = `https://script.google.com/macros/s/AKfycbx1giffxRhn2fjSOoYVRDo7it2_uebcP4u9OHF-zNTJw_GgwZTq1aizOri0TyRSZnWyLQ/exec?callback=${callbackName}&name=${encodeURIComponent(name)}`;
+      document.body.appendChild(script);
     }
   </script>
 </body>
