@@ -329,62 +329,12 @@
   </div>
 
   <script>
-  
-  // Replace with your deployed web app URL
-  const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwOmaGSq1MxvHHg1ib3-lhqD8DB1Jm2A7WRBqn1JO_sdeZWxSG5Xtq71Q2HLcEoZzB_Tg/exec";
-  
-  // Function to call Google Apps Script functions
-  async function callGoogleScript(functionName, params = []) {
-    try {
-      const response = await fetch(`${WEB_APP_URL}?action=${functionName}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          orderNumber: params[0],
-          accessCode: params[1],
-          scanTime: params[2],
-          locationData: params[3]
-        })
-      });
-      
-      return await response.json();
-    } catch (error) {
-      console.error('API Call Error:', error);
-      return { error: error.message };
-    }
-  }
-  
-  // Replace the fetchOrderData function in your GitHub page:
-  async function fetchOrderData(order, code) {
-    return await callGoogleScript('getOrderData', [order, code]);
-  }
-  
-  // Replace the search function call to use the new API
-  async function search() {
-    const order = document.getElementById('orderInput').value.trim();
-    const code = document.getElementById('codeInput').value.trim();
-    
-    if (!order) { showMessage('Order number required.', 'error'); return; }
-    if (!code) { showMessage('Access code required.', 'error'); return; }
-    
-    showMessage('');
-    showLoadingSkeleton();
-    
-    const resp = await fetchOrderData(order, code);
-    
-    if (!resp || resp.error) {
-      renderError(resp ? resp.error : 'Unknown error');
-      return;
-    }
-    
-    persistSession(order, code);
-    render(resp);
-  }
     const STEPS = ['Order Placed','Picked up','Out for delivery','Delivered'];
     const TIMEOUT_MS = 12000;
     let timeoutHandle = null;
+    
+    // Replace with your deployed web app URL
+    const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbzpBeIRVEHZpYvE4xvhV_l0nDZ3AlGbC-PJ_M1ch8n_pvz486laGEby4UVjrVdyRkHHCg/exec";
 
     function formatDate(d) {
       if (d == null) return '—';
@@ -400,7 +350,7 @@
       };
       return dt.toLocaleString(undefined, opts).replace(/,/g, '');
     }
-    
+
     function showMessage(text, type='error') {
       const area = document.getElementById('messageArea');
       if (!text) { area.innerHTML=''; return; }
@@ -539,35 +489,37 @@
       document.getElementById('result').innerHTML = html;
     }
 
-    function fetchOrderData(order, code) {
-      return new Promise((resolve) => {
-        let done = false;
-        timeoutHandle = setTimeout(() => {
-          if (done) return;
-          done = true;
-          resolve({ error: 'Load failed: request timed out.' });
-        }, TIMEOUT_MS);
-
-        if (!window.google || !google.script || !google.script.run) {
-          clearTimeout(timeoutHandle);
-          resolve({ error: 'google.script.run unavailable' });
-          return;
+    async function callGoogleScriptAPI(action, data = {}) {
+      const params = new URLSearchParams();
+      params.append('action', action);
+      
+      for (const key in data) {
+        if (data[key]) {
+          params.append(key, data[key]);
         }
+      }
+      
+      try {
+        const response = await fetch(`${WEB_APP_URL}?${params.toString()}`, {
+          method: 'GET',
+          redirect: 'follow'
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        return await response.json();
+      } catch (error) {
+        console.error('API Call Error:', error);
+        return { error: error.message };
+      }
+    }
 
-        google.script.run
-          .withSuccessHandler(resp => {
-            if (done) return;
-            done = true;
-            clearTimeout(timeoutHandle);
-            resolve(resp);
-          })
-          .withFailureHandler(err => {
-            if (done) return;
-            done = true;
-            clearTimeout(timeoutHandle);
-            resolve({ error: err.message || 'Fetch failed' });
-          })
-          .fetchOrderWithCode(order, code);
+    async function fetchOrderData(order, code) {
+      return await callGoogleScriptAPI('getOrderData', {
+        orderNumber: order,
+        accessCode: code
       });
     }
 
@@ -677,21 +629,6 @@
         });
       });
     });
-    // API endpoint for GitHub page to fetch order data
-function getOrderData(orderNumber, accessCode) {
-  return fetchOrderWithCode(orderNumber, accessCode);
-}
-
-// API endpoint for GitHub page to check status
-function getOrderStatus(orderNumber, accessCode) {
-  return checkOrderStatus(orderNumber, accessCode);
-}
-
-// API endpoint for GitHub page to mark as delivered
-function apiMarkAsDelivered(orderNumber, accessCode, scanTime, locationData) {
-  return markAsDelivered(orderNumber, accessCode, scanTime, locationData);
-}
-    
   </script>
 </body>
 </html>
