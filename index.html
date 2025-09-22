@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Check and Save Name</title>
+  <title>Check Name Availability</title>
 </head>
 <body>
-  <h3>Enter your name</h3>
+  <h3>Enter your name to check</h3>
   <input id="name" placeholder="Type name..." />
-  <button onclick="send()">Send</button>
+  <button onclick="checkName()">Check</button>
   <p id="result"></p>
 
   <script>
-    function send() {
+    function checkName() {
       const name = document.getElementById('name').value.trim();
       const result = document.getElementById('result');
       const callbackName = 'handleResponse';
@@ -26,21 +26,14 @@
 
       // Define callback
       window[callbackName] = function(data) {
-        if (data.status === 'exists') {
-          result.textContent = '❌ ' + data.message;
-        } else if (data.status === 'success') {
-          result.textContent = '✅ ' + data.message;
-        } else {
-          result.textContent = '⚠️ ' + data.message;
-        }
-
+        result.textContent = data.message;
         delete window[callbackName];
       };
 
       // Create new script tag with JSONP URL
       const script = document.createElement('script');
       script.id = 'jsonpScript';
-      const scriptUrl = 'https://script.google.com/macros/s/AKfycbyFjVLB28J6Hvh2e18K8yEQLI4NanVdUBayyukJQ-DSs2ia3ktwYFKB4im2oHOg6lBoig/exec'; // Replace with your deployed Apps Script URL
+      const scriptUrl = 'YOUR_WEB_APP_URL_HERE'; // Replace with your deployed Apps Script URL
       script.src = `${scriptUrl}?callback=${callbackName}&name=${encodeURIComponent(name)}&cb=${Date.now()}`;
       document.body.appendChild(script);
     }
