@@ -625,47 +625,50 @@
       });
     });
   // ... all your existing functions above ...
+  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz07-ZSST7YnuecT7LkSvaaiB6BUBEVVKZ7reiOjR5jayDFPqZh00eCxn2PD6QO9DgGlg/exec';
 
-    const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzrN5Jx-HLtzM_l3mc_IE0ZDzOapEpMbcedf_6gwM-3XkAUjTdf3CpZgAdTGVwF41v9yQ/exec';
+  async function fetchOrderData(order, code) {
+    const url = `${APPS_SCRIPT_URL}?page=track&order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}`;
 
-async function fetchOrderData(order, code) {
-  const url = `${APPS_SCRIPT_URL}?order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}&page=track`;
-
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error('Network response was not ok');
-    const data = await response.json();
-    return data;
-  } catch (error) {
-    console.error('Error fetching order:', error);
-    return { error: error.message };
-  }
-}
-
-  window.addEventListener('DOMContentLoaded', () => {
-    setFloatingLabels();
-    
-    const params = new URLSearchParams(window.location.search);
-    const orderParam = params.get('order') || '';
-    const codeParam = params.get('code') || '';
-    const session = loadSession();
-
-    if (orderParam) document.getElementById('orderInput').value = orderParam;
-    else if (session.order) document.getElementById('orderInput').value = session.order;
-
-    if (codeParam) document.getElementById('codeInput').value = codeParam;
-    else if (session.code) document.getElementById('codeInput').value = session.code;
-
-    document.querySelectorAll('.field-wrapper').forEach(w => {
-      const input = w.querySelector('.floating-input');
-      if (input) input.dispatchEvent(new Event('input'));
-    });
-
-    // Automatically trigger search if both fields have values
-    if (document.getElementById('orderInput').value.trim() && document.getElementById('codeInput').value.trim()) {
-      search();
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        mode: 'cors',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!response.ok) {
+        throw new Error('Network response was not ok, status ' + response.status);
+      }
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error fetching order:', error);
+      return { error: error.message };
     }
-  });
+  }
+
+  // Example usage:
+  async function search() {
+    const order = document.getElementById('orderInput').value.trim();
+    const code = document.getElementById('codeInput').value.trim();
+    const resultDiv = document.getElementById('result');
+    resultDiv.textContent = ''; // clear
+
+    if (!order || !code) {
+      resultDiv.textContent = 'Order & Code are required';
+      return;
+    }
+
+    const resp = await fetchOrderData(order, code);
+    if (resp.error) {
+      resultDiv.textContent = 'Error: ' + resp.error;
+    } else {
+      // process resp.order or resp.whatever your backend returns
+      resultDiv.textContent = JSON.stringify(resp);
+    }
+  }
 </script>
 </body>
 </html>
