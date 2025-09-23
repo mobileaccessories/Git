@@ -335,8 +335,8 @@
     function showMessage(text, type='error') {
       const area = document.getElementById('messageArea');
       if (!text) { area.innerHTML=''; return; }
-      if (type==='error') area.innerHTML=`<div class="error-box" role="alert"><div>${text}</div></div>`;
-      else area.innerHTML=`<div class="success-box" role="status"><div>${text}</div></div>`;
+      if (type==='error') area.innerHTML=`<div class="error-box" role="alert"><div>${escapeHtml(text)}</div></div>`;
+      else area.innerHTML=`<div class="success-box" role="status"><div>${escapeHtml(text)}</div></div>`;
     }
 
     function setFloatingLabels() {
@@ -385,25 +385,6 @@
       if (['cancelled','canceled','cancel','order cancelled','order canceled'].includes(t)) return 'cancelled';
       if (t.includes('cancel')) return 'cancelled';
       return t;
-    }
-
-    // Heuristic to detect whether a string looks like a person's name vs an address/location.
-    // This helps when upstream data fields are accidentally swapped.
-    function looksLikePerson(val) {
-      if (!val) return false;
-      const s = String(val).trim();
-      if (!s) return false;
-      // If it contains digits or comma (typical in addresses), treat as location
-      if (/\d/.test(s)) return false;
-      if (s.indexOf(',') !== -1) return false;
-      const lower = s.toLowerCase();
-      const locationHints = ['street','st','road','rd','lane','ave','avenue','colombo','kandy','city','town','village','ward','area','post','p.o','po box','postal','zip','#'];
-      if (locationHints.some(h=> lower.includes(h))) return false;
-      // If name has many words (>4) it's probably an address
-      const words = s.split(/\s+/);
-      if (words.length > 4) return false;
-      // Likely a person if it has 1-4 words and no numbers/location hints
-      return true;
     }
 
     function renderProgress(status) {
@@ -476,17 +457,58 @@
       } catch(err){ clearTimeout(timeout); return {error:err.message||'Fetch failed'}; }
     }
 
-    async function search() {
-      const order=document.getElementById('orderInput').value.trim();
-      const code=document.getElementById('codeInput').value.trim();
-      if (!order) { showMessage('Order number required.'); return; }
-      if (!code) { showMessage('Access code required.'); return; }
-      showMessage('');
-      showLoadingSkeleton();
-      const resp = await fetchOrderData(order, code);
-      if (!resp || resp.error) { renderError(resp?resp.error:'Unknown error'); return; }
-      persistSession(order, code);
-      render(resp);
+    // --- New helper functions for heuristic swap + escaping ---
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function looksLikeName(s) {
+      if (!s) return false;
+      const trimmed = s.trim();
+      // if contains digits or commas it's unlikely to be a person name
+      if (/\d/.test(trimmed) || /,/.test(trimmed)) return false;
+      // typical short person names: 1-4 words, letters and some punctuation
+      const words = trimmed.split(/\s+/);
+      if (words.length > 4) return false;
+      // allow titles (Mr, Ms) and normal name characters
+      return /^[A-Za-zÀ-ÖØ-öø-ÿ.'\-\s]{2,}$/.test(trimmed);
+    }
+
+    function looksLikeLocation(s) {
+      if (!s) return false;
+      const t = s.toLowerCase();
+      // if it contains digits or a comma it's more likely an address
+      if (/\d/.test(t) || /,/.test(t)) return true;
+      // common location/address words
+      const locationWords = ['street','st','road','rd','ave','avenue','lane','ln','colombo','city','town','village','block','sector','province','district','near','opposite'];
+      if (locationWords.some(w=>t.includes(w))) return true;
+      // very long strings (descriptive addresses) -> location
+      if (t.length > 30) return true;
+      return false;
+    }
+
+    // Decides whether to swap CurrentLocation <-> DeliveryPerson when backend may have reversed fields.
+    function inferAndFixFields(obj) {
+      let rawLoc = obj.CurrentLocation || '';
+      let rawDel = obj.DeliveryPerson || '';
+
+      const locLooksName = looksLikeName(rawLoc);
+      const delLooksLocation = looksLikeLocation(rawDel);
+      const locLooksLocation = looksLikeLocation(rawLoc);
+      const delLooksName = looksLikeName(rawDel);
+
+      // If location field looks like a name and deliveryPerson looks like a location -> swap.
+      if (locLooksName && delLooksLocation && !locLooksLocation && !delLooksName) {
+        return { location: rawDel, deliveryPerson: rawLoc, swapped: true };
+      }
+      // Otherwise keep as-is.
+      return { location: rawLoc, deliveryPerson: rawDel, swapped: false };
     }
 
     function renderError(msg) {
@@ -498,22 +520,9 @@
       document.getElementById('result').innerHTML='';
       if (resp.error) { renderError(resp.error); return; }
       const o = resp.order || {};
-
-      // Normalize delivery person & location in case upstream fields are swapped.
-      let deliveryVal = o.DeliveryPerson || o.Delivery || o.DeliveryName || '';
-      let locationVal = o.CurrentLocation || o.Location || o.Address || '';
-
-      const deliveryLooksPerson = looksLikePerson(deliveryVal);
-      const locationLooksPerson = looksLikePerson(locationVal);
-
-      // If heuristics suggest they are swapped, swap them.
-      if (!deliveryLooksPerson && locationLooksPerson) {
-        [deliveryVal, locationVal] = [locationVal, deliveryVal];
-      }
-
       const isCancelled = canonicalStatusLocal(o.CurrentStatus)==='cancelled';
       const {html, idx} = renderProgress(o.CurrentStatus);
-      const wrapper=document.createElement('div'); wrapper.innerHTML=html;
+      const wrapper = document.createElement('div'); wrapper.innerHTML = html;
 
       if (isCancelled) {
         const cardEl = wrapper.querySelector('.card');
@@ -523,38 +532,32 @@
         }
       }
 
+      // Use inference to avoid swapped values
+      const fixed = inferAndFixFields(o);
+      const locationVal = fixed.location || '-';
+      const deliveryPersonVal = fixed.deliveryPerson || '-';
+
       const summaryGrid = wrapper.querySelector('.summary-grid');
       summaryGrid.innerHTML=`
-        <div class="field"><div class="label">Order #</div><div class="value">${o.OrderNumber||'-'}</div></div>
-        <div class="field"><div class="label">Customer</div><div class="value">${o.CustomerName||'-'}</div></div>
-        <div class="field"><div class="label">Status</div><div class="value">${o.CurrentStatus||'-'}</div></div>
-        <div class="field"><div class="label">Location</div><div class="value">${locationVal||'-'}</div></div>
-        <div class="field"><div class="label">Delivery Person</div><div class="value">${deliveryVal||'-'}</div></div>
-        <div class="field"><div class="label">Last Update</div><div class="value">${formatDate(o.LastUpdate)||'-'}</div></div>`;
+        <div class="field"><div class="label">Order #</div><div class="value">${escapeHtml(o.OrderNumber||'-')}</div></div>
+        <div class="field"><div class="label">Customer</div><div class="value">${escapeHtml(o.CustomerName||'-')}</div></div>
+        <div class="field"><div class="label">Status</div><div class="value">${escapeHtml(o.CurrentStatus||'-')}</div></div>
+        <div class="field"><div class="label">Location</div><div class="value">${escapeHtml(locationVal)}</div></div>
+        <div class="field"><div class="label">Delivery Person</div><div class="value">${escapeHtml(deliveryPersonVal)}</div></div>
+        <div class="field"><div class="label">Last Update</div><div class="value">${escapeHtml(formatDate(o.LastUpdate)||'-')}</div></div>`;
 
       document.getElementById('result').appendChild(wrapper);
       requestAnimationFrame(()=>adjustProgressFill(wrapper,idx));
 
-      // Render history (apply same heuristic to each history row if needed)
       if (resp.history && resp.history.length) {
         let histHtml=`<div class="card" aria-label="Timeline"><div class="label" style="margin-bottom:8px;font-size:0.75rem;text-transform:uppercase;">Timeline</div>`;
-        resp.history.forEach(hraw=>{
-          const h = hraw || {};
-          let histLocation = h.Location || h.CurrentLocation || '';
-          let histUpdatedBy = h.UpdatedBy || h.By || '';
-          const histLocLooksPerson = looksLikePerson(histLocation);
-          const histUpdatedByLooksPerson = looksLikePerson(histUpdatedBy);
-          if (!histUpdatedByLooksPerson && histLocLooksPerson) {
-            // swap if looks swapped
-            [histLocation, histUpdatedBy] = [histUpdatedBy, histLocation];
-          }
-
+        resp.history.forEach(h=>{
           histHtml+=`<div class="history">
             <div class="history-item">
               <div class="history-time">${formatDate(h.Timestamp)}</div>
               <div class="history-detail">
-                <div><strong>${h.Status||'-'}</strong> — ${histLocation||'-'}</div>
-                <div class="small">By: ${histUpdatedBy||'-'}${h.Notes?' | '+h.Notes:''}</div>
+                <div><strong>${escapeHtml(h.Status)}</strong> — ${escapeHtml(h.Location||'-')}</div>
+                <div class="small">By: ${escapeHtml(h.UpdatedBy||'-')}${h.Notes?' | '+escapeHtml(h.Notes):''}</div>
               </div>
             </div>
           </div>`;
@@ -563,6 +566,19 @@
         const histWrapper=document.createElement('div'); histWrapper.innerHTML=histHtml;
         document.getElementById('result').appendChild(histWrapper);
       }
+    }
+
+    async function search() {
+      const order=document.getElementById('orderInput').value.trim();
+      const code=document.getElementById('codeInput').value.trim();
+      if (!order) { showMessage('Order number required.'); return; }
+      if (!code) { showMessage('Access code required.'); return; }
+      showMessage('');
+      showLoadingSkeleton();
+      const resp = await fetchOrderData(order, code);
+      if (!resp || resp.error) { renderError(resp?resp.error:'Unknown error'); return; }
+      persistSession(order, code);
+      render(resp);
     }
 
     window.addEventListener('DOMContentLoaded',()=>{
