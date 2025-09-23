@@ -349,6 +349,17 @@
       });
     }
 
+    function persistSession(order, code) {
+      try {
+        localStorage.setItem('tracking_order', order);
+        localStorage.setItem('tracking_code', code);
+        const params = new URLSearchParams(window.location.search);
+        params.set('order', order);
+        params.set('code', code);
+        window.history.replaceState({}, '', `${location.pathname}?${params}`);
+      } catch {}
+    }
+
     function loadSession() {
       try {
         return {
@@ -433,7 +444,7 @@
 
     async function fetchOrderData(order, code) {
       const API_URL = 'https://script.google.com/macros/s/AKfycbyS49YKVe0FWqWrDXOpQUvFXbvZFyxYvGahjQv_P-aRu2B0xKOXMTcJksuLKwopoeZX/exec'; // Replace with your URL
-      if (!API_URL || API_URL.includes('YOUR_SCRIPT_ID')) return {error:'API_URL not configured.'};
+      if (!API_URL || API_URL.includes('https://script.google.com/macros/s/AKfycbyS49YKVe0FWqWrDXOpQUvFXbvZFyxYvGahjQv_P-aRu2B0xKOXMTcJksuLKwopoeZX/exec')) return {error:'API_URL not configured.'};
       const url=`${API_URL}?order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}`;
       const controller=new AbortController();
       const timeout=setTimeout(()=>controller.abort(),TIMEOUT_MS);
