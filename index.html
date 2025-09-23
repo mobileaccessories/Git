@@ -387,6 +387,25 @@
       return t;
     }
 
+    // Heuristic to detect whether a string looks like a person's name vs an address/location.
+    // This helps when upstream data fields are accidentally swapped.
+    function looksLikePerson(val) {
+      if (!val) return false;
+      const s = String(val).trim();
+      if (!s) return false;
+      // If it contains digits or comma (typical in addresses), treat as location
+      if (/\d/.test(s)) return false;
+      if (s.indexOf(',') !== -1) return false;
+      const lower = s.toLowerCase();
+      const locationHints = ['street','st','road','rd','lane','ave','avenue','colombo','kandy','city','town','village','ward','area','post','p.o','po box','postal','zip','#'];
+      if (locationHints.some(h=> lower.includes(h))) return false;
+      // If name has many words (>4) it's probably an address
+      const words = s.split(/\s+/);
+      if (words.length > 4) return false;
+      // Likely a person if it has 1-4 words and no numbers/location hints
+      return true;
+    }
+
     function renderProgress(status) {
       const idxRaw = getStepIndex(status);
       const isCancelled = canonicalStatusLocal(status)==='cancelled';
@@ -478,7 +497,20 @@
     function render(resp) {
       document.getElementById('result').innerHTML='';
       if (resp.error) { renderError(resp.error); return; }
-      const o=resp.order;
+      const o = resp.order || {};
+
+      // Normalize delivery person & location in case upstream fields are swapped.
+      let deliveryVal = o.DeliveryPerson || o.Delivery || o.DeliveryName || '';
+      let locationVal = o.CurrentLocation || o.Location || o.Address || '';
+
+      const deliveryLooksPerson = looksLikePerson(deliveryVal);
+      const locationLooksPerson = looksLikePerson(locationVal);
+
+      // If heuristics suggest they are swapped, swap them.
+      if (!deliveryLooksPerson && locationLooksPerson) {
+        [deliveryVal, locationVal] = [locationVal, deliveryVal];
+      }
+
       const isCancelled = canonicalStatusLocal(o.CurrentStatus)==='cancelled';
       const {html, idx} = renderProgress(o.CurrentStatus);
       const wrapper=document.createElement('div'); wrapper.innerHTML=html;
@@ -496,22 +528,33 @@
         <div class="field"><div class="label">Order #</div><div class="value">${o.OrderNumber||'-'}</div></div>
         <div class="field"><div class="label">Customer</div><div class="value">${o.CustomerName||'-'}</div></div>
         <div class="field"><div class="label">Status</div><div class="value">${o.CurrentStatus||'-'}</div></div>
-        <div class="field"><div class="label">Location</div><div class="value">${o.CurrentLocation||'-'}</div></div>
-        <div class="field"><div class="label">Delivery Person</div><div class="value">${o.DeliveryPerson||'-'}</div></div>
+        <div class="field"><div class="label">Location</div><div class="value">${locationVal||'-'}</div></div>
+        <div class="field"><div class="label">Delivery Person</div><div class="value">${deliveryVal||'-'}</div></div>
         <div class="field"><div class="label">Last Update</div><div class="value">${formatDate(o.LastUpdate)||'-'}</div></div>`;
 
       document.getElementById('result').appendChild(wrapper);
       requestAnimationFrame(()=>adjustProgressFill(wrapper,idx));
 
+      // Render history (apply same heuristic to each history row if needed)
       if (resp.history && resp.history.length) {
         let histHtml=`<div class="card" aria-label="Timeline"><div class="label" style="margin-bottom:8px;font-size:0.75rem;text-transform:uppercase;">Timeline</div>`;
-        resp.history.forEach(h=>{
+        resp.history.forEach(hraw=>{
+          const h = hraw || {};
+          let histLocation = h.Location || h.CurrentLocation || '';
+          let histUpdatedBy = h.UpdatedBy || h.By || '';
+          const histLocLooksPerson = looksLikePerson(histLocation);
+          const histUpdatedByLooksPerson = looksLikePerson(histUpdatedBy);
+          if (!histUpdatedByLooksPerson && histLocLooksPerson) {
+            // swap if looks swapped
+            [histLocation, histUpdatedBy] = [histUpdatedBy, histLocation];
+          }
+
           histHtml+=`<div class="history">
             <div class="history-item">
               <div class="history-time">${formatDate(h.Timestamp)}</div>
               <div class="history-detail">
-                <div><strong>${h.Status}</strong> — ${h.Location||'-'}</div>
-                <div class="small">By: ${h.UpdatedBy||'-'}${h.Notes?' | '+h.Notes:''}</div>
+                <div><strong>${h.Status||'-'}</strong> — ${histLocation||'-'}</div>
+                <div class="small">By: ${histUpdatedBy||'-'}${h.Notes?' | '+h.Notes:''}</div>
               </div>
             </div>
           </div>`;
