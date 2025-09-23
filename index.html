@@ -108,6 +108,7 @@
       transition:filter var(--transition);
       flex-shrink:0;
     }
+    .track-btn[disabled] { opacity:0.6; cursor:not-allowed; filter:none; }
     .track-btn:hover { filter:brightness(1.08); }
     .card {
       background:var(--card);
@@ -306,8 +307,8 @@
           <label class="floating-label" for="codeInput">Access code</label>
         </div>
         <div style="display:flex; align-items:flex-end;">
-          <button class="track-btn" onclick="search()" aria-label="Track order">
-            <span>Track</span>
+          <button id="trackBtn" class="track-btn" onclick="search()" aria-label="Track order">
+            <span id="trackBtnText">Track</span>
           </button>
         </div>
       </div>
@@ -321,6 +322,17 @@
   <script>
     const STEPS = ['Order Placed','Picked up','Out for delivery','Delivered'];
     const TIMEOUT_MS = 12000;
+
+    // ----------------- Utilities -----------------
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
 
     function formatDate(d) {
       if (!d) return '—';
@@ -339,6 +351,18 @@
       else area.innerHTML=`<div class="success-box" role="status"><div>${escapeHtml(text)}</div></div>`;
     }
 
+    function setButtonLoading(loading = true) {
+      const btn = document.getElementById('trackBtn');
+      const txt = document.getElementById('trackBtnText');
+      if (loading) {
+        btn.setAttribute('disabled','');
+        txt.innerHTML = '<span class="loader-small" aria-hidden="true"></span>Searching';
+      } else {
+        btn.removeAttribute('disabled');
+        txt.textContent = 'Track';
+      }
+    }
+
     function setFloatingLabels() {
       document.querySelectorAll('.field-wrapper').forEach(w => {
         const input = w.querySelector('.floating-input');
@@ -346,6 +370,7 @@
         if (input.value.trim()) w.classList.add('has-value'); else w.classList.remove('has-value');
         input.addEventListener('input',()=>{ input.value.trim()? w.classList.add('has-value') : w.classList.remove('has-value'); });
         input.addEventListener('focus',()=>w.classList.add('has-value'));
+        input.addEventListener('blur',()=>{ if (!input.value.trim()) w.classList.remove('has-value'); });
       });
     }
 
@@ -369,6 +394,44 @@
       } catch { return { order:'', code:'' }; }
     }
 
+    // ----------------- Heuristics for swapped fields -----------------
+    function looksLikeName(s) {
+      if (!s) return false;
+      const trimmed = s.trim();
+      if (/\d/.test(trimmed) || /,/.test(trimmed)) return false;
+      const words = trimmed.split(/\s+/);
+      if (words.length > 4) return false;
+      return /^[A-Za-zÀ-ÖØ-öø-ÿ.'\-\s]{2,}$/.test(trimmed);
+    }
+
+    function looksLikeLocation(s) {
+      if (!s) return false;
+      const t = String(s).toLowerCase();
+      if (/\d/.test(t) || /,/.test(t)) return true;
+      const locationWords = ['street','st','road','rd','ave','avenue','lane','ln','colombo','city','town','village','near','opposite','block','sector','province','district'];
+      if (locationWords.some(w=>t.includes(w))) return true;
+      if (t.length > 30) return true;
+      return false;
+    }
+
+    function inferAndFixFields(obj = {}) {
+      const rawLoc = obj.CurrentLocation || '';
+      const rawDel = obj.DeliveryPerson || '';
+
+      const locLooksName = looksLikeName(rawLoc);
+      const delLooksLocation = looksLikeLocation(rawDel);
+      const locLooksLocation = looksLikeLocation(rawLoc);
+      const delLooksName = looksLikeName(rawDel);
+
+      // If location field looks like a name and deliveryPerson looks like a location -> swap.
+      if (locLooksName && delLooksLocation && !locLooksLocation && !delLooksName) {
+        return { location: rawDel, deliveryPerson: rawLoc, swapped: true };
+      }
+      // otherwise leave as-is
+      return { location: rawLoc, deliveryPerson: rawDel, swapped: false };
+    }
+
+    // ----------------- Progress rendering -----------------
     function getStepIndex(status) {
       if (!status) return 0;
       const s = status.toLowerCase();
@@ -394,7 +457,7 @@
       let stepsHtml = '';
       STEPS.forEach((label,i)=>{
         const completed = !isCancelled && i<=idx;
-        stepsHtml+=`<div class="step ${completed?'completed':''}"><div class="step-circle">${completed?'&#10003;':i+1}</div><div class="step-label">${label}</div></div>`;
+        stepsHtml+=`<div class="step ${completed?'completed':''}"><div class="step-circle">${completed?'&#10003;':i+1}</div><div class="step-label">${escapeHtml(label)}</div></div>`;
       });
       return {html:`<div class="card" aria-label="Order summary">
           <div class="progress" aria-label="Progress">
@@ -412,24 +475,52 @@
       if (!progressContainer) return;
       const fill = progressContainer.querySelector('.connector-fill');
       const steps = progressContainer.querySelectorAll('.step');
+      if (!fill || !steps.length) return;
       if (idx<0) { fill.style.width='0%'; steps.forEach(s=>s.classList.remove('completed')); return; }
       if (!steps[idx]) return;
-      const circle = steps[idx].querySelector('.step-circle');
-      const bar = progressContainer.querySelector('.connector');
-      const barRect = bar.getBoundingClientRect();
-      const circleRect = circle.getBoundingClientRect();
-      let extra=0;
-      if (steps[idx+1]) {
-        const nextCircle = steps[idx+1].querySelector('.step-circle');
-        const currCenter = circleRect.left+circleRect.width/2;
-        const nextCenter = nextCircle.getBoundingClientRect().left + nextCircle.getBoundingClientRect().width/2;
-        extra = Math.max(0,nextCenter-currCenter)*0.25;
-      } else extra = circleRect.width*0.25;
-      let targetPx = (circleRect.right-barRect.left)+extra;
-      if (targetPx>barRect.width) targetPx=barRect.width;
-      fill.style.width=(targetPx/barRect.width*100)+'%';
+      // run inside requestAnimationFrame so layout is ready
+      requestAnimationFrame(()=>{
+        const circle = steps[idx].querySelector('.step-circle');
+        const bar = progressContainer.querySelector('.connector');
+        if (!circle || !bar) return;
+        const barRect = bar.getBoundingClientRect();
+        const circleRect = circle.getBoundingClientRect();
+        if (!barRect.width) { fill.style.width='0%'; return; }
+        let extra=0;
+        if (steps[idx+1]) {
+          const nextCircleRect = steps[idx+1].querySelector('.step-circle').getBoundingClientRect();
+          const currCenter = circleRect.left+circleRect.width/2;
+          const nextCenter = nextCircleRect.left + nextCircleRect.width/2;
+          extra = Math.max(0,nextCenter-currCenter)*0.25;
+        } else extra = circleRect.width*0.25;
+        let targetPx = (circleRect.right-barRect.left)+extra;
+        if (targetPx>barRect.width) targetPx=barRect.width;
+        fill.style.width=(targetPx/barRect.width*100)+'%';
+      });
     }
 
+    // ----------------- Fetching -----------------
+    async function fetchOrderData(order, code) {
+      // your API URL
+      const API_URL = 'https://script.google.com/macros/s/AKfycbyS49YKVe0FWqWrDXOpQUvFXbvZFyxYvGahjQv_P-aRu2B0xKOXMTcJksuLKwopoeZX/exec';
+      if (!API_URL || API_URL.includes('YOUR_SCRIPT_ID')) return {error:'API_URL not configured.'};
+      const url=`${API_URL}?order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}`;
+      const controller=new AbortController();
+      const timeout=setTimeout(()=>controller.abort(),TIMEOUT_MS);
+      try {
+        const response = await fetch(url,{method:'GET',mode:'cors',cache:'no-store',signal:controller.signal});
+        clearTimeout(timeout);
+        if (!response.ok) return {error:`HTTP ${response.status}`};
+        const data = await response.json();
+        return data;
+      } catch(err){
+        clearTimeout(timeout);
+        if (err.name === 'AbortError') return {error:'Request timed out.'};
+        return {error: err.message || 'Fetch failed'};
+      }
+    }
+
+    // ----------------- Rendering -----------------
     function showLoadingSkeleton() {
       const html = `<div class="card">
           <div class="placeholder" style="height:20px;width:60%;margin-bottom:16px;border-radius:6px;"></div>
@@ -442,75 +533,6 @@
       document.getElementById('result').innerHTML=html;
     }
 
-    async function fetchOrderData(order, code) {
-      const API_URL = 'https://script.google.com/macros/s/AKfycbwqlhxnEFR7umGfnIUGKHgWqPwUIGK019zSaoHoYRgbnn2DI-6e9qS21TxYgay3QEIl/exec'; // Replace with your URL
-      if (!API_URL || API_URL.includes('YOUR_SCRIPT_ID')) return {error:'API_URL not configured.'};
-      const url=`${API_URL}?order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}`;
-      const controller=new AbortController();
-      const timeout=setTimeout(()=>controller.abort(),TIMEOUT_MS);
-      try {
-        const response = await fetch(url,{method:'GET',mode:'cors',cache:'no-store',signal:controller.signal});
-        clearTimeout(timeout);
-        if (!response.ok) return {error:`HTTP ${response.status}`};
-        const data = await response.json();
-        return data;
-      } catch(err){ clearTimeout(timeout); return {error:err.message||'Fetch failed'}; }
-    }
-
-    // --- New helper functions for heuristic swap + escaping ---
-    function escapeHtml(str) {
-      if (str === null || str === undefined) return '';
-      return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-    }
-
-    function looksLikeName(s) {
-      if (!s) return false;
-      const trimmed = s.trim();
-      // if contains digits or commas it's unlikely to be a person name
-      if (/\d/.test(trimmed) || /,/.test(trimmed)) return false;
-      // typical short person names: 1-4 words, letters and some punctuation
-      const words = trimmed.split(/\s+/);
-      if (words.length > 4) return false;
-      // allow titles (Mr, Ms) and normal name characters
-      return /^[A-Za-zÀ-ÖØ-öø-ÿ.'\-\s]{2,}$/.test(trimmed);
-    }
-
-    function looksLikeLocation(s) {
-      if (!s) return false;
-      const t = s.toLowerCase();
-      // if it contains digits or a comma it's more likely an address
-      if (/\d/.test(t) || /,/.test(t)) return true;
-      // common location/address words
-      const locationWords = ['street','st','road','rd','ave','avenue','lane','ln','colombo','city','town','village','block','sector','province','district','near','opposite'];
-      if (locationWords.some(w=>t.includes(w))) return true;
-      // very long strings (descriptive addresses) -> location
-      if (t.length > 30) return true;
-      return false;
-    }
-
-    // Decides whether to swap CurrentLocation <-> DeliveryPerson when backend may have reversed fields.
-    function inferAndFixFields(obj) {
-      let rawLoc = obj.CurrentLocation || '';
-      let rawDel = obj.DeliveryPerson || '';
-
-      const locLooksName = looksLikeName(rawLoc);
-      const delLooksLocation = looksLikeLocation(rawDel);
-      const locLooksLocation = looksLikeLocation(rawLoc);
-      const delLooksName = looksLikeName(rawDel);
-
-      // If location field looks like a name and deliveryPerson looks like a location -> swap.
-      if (locLooksName && delLooksLocation && !locLooksLocation && !delLooksName) {
-        return { location: rawDel, deliveryPerson: rawLoc, swapped: true };
-      }
-      // Otherwise keep as-is.
-      return { location: rawLoc, deliveryPerson: rawDel, swapped: false };
-    }
-
     function renderError(msg) {
       document.getElementById('result').innerHTML='';
       showMessage(msg,'error');
@@ -518,11 +540,13 @@
 
     function render(resp) {
       document.getElementById('result').innerHTML='';
+      if (!resp) { renderError('Empty response from server'); return; }
       if (resp.error) { renderError(resp.error); return; }
       const o = resp.order || {};
       const isCancelled = canonicalStatusLocal(o.CurrentStatus)==='cancelled';
-      const {html, idx} = renderProgress(o.CurrentStatus);
-      const wrapper = document.createElement('div'); wrapper.innerHTML = html;
+      const {html, idx} = renderProgress(o.CurrentStatus || '');
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = html;
 
       if (isCancelled) {
         const cardEl = wrapper.querySelector('.card');
@@ -532,32 +556,34 @@
         }
       }
 
-      // Use inference to avoid swapped values
+      // Fix swapped fields if backend returned reversed values
       const fixed = inferAndFixFields(o);
       const locationVal = fixed.location || '-';
       const deliveryPersonVal = fixed.deliveryPerson || '-';
 
       const summaryGrid = wrapper.querySelector('.summary-grid');
       summaryGrid.innerHTML=`
-        <div class="field"><div class="label">Order #</div><div class="value">${escapeHtml(o.OrderNumber||'-')}</div></div>
-        <div class="field"><div class="label">Customer</div><div class="value">${escapeHtml(o.CustomerName||'-')}</div></div>
-        <div class="field"><div class="label">Status</div><div class="value">${escapeHtml(o.CurrentStatus||'-')}</div></div>
+        <div class="field"><div class="label">Order #</div><div class="value">${escapeHtml(o.OrderNumber || '-')}</div></div>
+        <div class="field"><div class="label">Customer</div><div class="value">${escapeHtml(o.CustomerName || '-')}</div></div>
+        <div class="field"><div class="label">Status</div><div class="value">${escapeHtml(o.CurrentStatus || '-')}</div></div>
         <div class="field"><div class="label">Location</div><div class="value">${escapeHtml(locationVal)}</div></div>
         <div class="field"><div class="label">Delivery Person</div><div class="value">${escapeHtml(deliveryPersonVal)}</div></div>
-        <div class="field"><div class="label">Last Update</div><div class="value">${escapeHtml(formatDate(o.LastUpdate)||'-')}</div></div>`;
+        <div class="field"><div class="label">Last Update</div><div class="value">${escapeHtml(formatDate(o.LastUpdate) || '-')}</div></div>`;
 
       document.getElementById('result').appendChild(wrapper);
-      requestAnimationFrame(()=>adjustProgressFill(wrapper,idx));
+      // adjust fill after layout
+      adjustProgressFill(wrapper, idx);
 
-      if (resp.history && resp.history.length) {
+      // render timeline/history if present
+      if (Array.isArray(resp.history) && resp.history.length) {
         let histHtml=`<div class="card" aria-label="Timeline"><div class="label" style="margin-bottom:8px;font-size:0.75rem;text-transform:uppercase;">Timeline</div>`;
         resp.history.forEach(h=>{
           histHtml+=`<div class="history">
             <div class="history-item">
-              <div class="history-time">${formatDate(h.Timestamp)}</div>
+              <div class="history-time">${escapeHtml(formatDate(h.Timestamp))}</div>
               <div class="history-detail">
-                <div><strong>${escapeHtml(h.Status)}</strong> — ${escapeHtml(h.Location||'-')}</div>
-                <div class="small">By: ${escapeHtml(h.UpdatedBy||'-')}${h.Notes?' | '+escapeHtml(h.Notes):''}</div>
+                <div><strong>${escapeHtml(h.Status || '')}</strong> — ${escapeHtml(h.Location || '-')}</div>
+                <div class="small">By: ${escapeHtml(h.UpdatedBy || '-')}${h.Notes ? ' | ' + escapeHtml(h.Notes) : ''}</div>
               </div>
             </div>
           </div>`;
@@ -566,36 +592,51 @@
         const histWrapper=document.createElement('div'); histWrapper.innerHTML=histHtml;
         document.getElementById('result').appendChild(histWrapper);
       }
+      // success message clear
+      showMessage('', 'success');
     }
 
+    // ----------------- Main search -----------------
     async function search() {
-      const order=document.getElementById('orderInput').value.trim();
-      const code=document.getElementById('codeInput').value.trim();
+      const order = document.getElementById('orderInput').value.trim();
+      const code = document.getElementById('codeInput').value.trim();
       if (!order) { showMessage('Order number required.'); return; }
       if (!code) { showMessage('Access code required.'); return; }
       showMessage('');
       showLoadingSkeleton();
-      const resp = await fetchOrderData(order, code);
-      if (!resp || resp.error) { renderError(resp?resp.error:'Unknown error'); return; }
-      persistSession(order, code);
-      render(resp);
+      setButtonLoading(true);
+      try {
+        const resp = await fetchOrderData(order, code);
+        if (!resp || resp.error) {
+          renderError(resp ? (resp.error || 'Unknown error') : 'Unknown error');
+          return;
+        }
+        persistSession(order, code);
+        render(resp);
+      } catch (err) {
+        renderError(err.message || 'Unexpected error');
+      } finally {
+        setButtonLoading(false);
+      }
     }
 
+    // ----------------- Init -----------------
     window.addEventListener('DOMContentLoaded',()=>{
       setFloatingLabels();
-      const params=new URLSearchParams(window.location.search);
-      const orderParam=params.get('order')||'';
-      const codeParam=params.get('code')||'';
-      const session=loadSession();
+      const params = new URLSearchParams(window.location.search);
+      const orderParam = params.get('order') || '';
+      const codeParam = params.get('code') || '';
+      const session = loadSession();
 
-      if (orderParam) document.getElementById('orderInput').value=orderParam;
-      else if (session.order) document.getElementById('orderInput').value=session.order;
+      if (orderParam) document.getElementById('orderInput').value = orderParam;
+      else if (session.order) document.getElementById('orderInput').value = session.order;
 
-      if (codeParam) document.getElementById('codeInput').value=codeParam;
-      else if (session.code) document.getElementById('codeInput').value=session.code;
+      if (codeParam) document.getElementById('codeInput').value = codeParam;
+      else if (session.code) document.getElementById('codeInput').value = session.code;
 
       document.querySelectorAll('.field-wrapper').forEach(w=>{
-        const input=w.querySelector('.floating-input'); if (input) input.dispatchEvent(new Event('input'));
+        const input = w.querySelector('.floating-input');
+        if (input) input.dispatchEvent(new Event('input'));
       });
 
       if (document.getElementById('orderInput').value.trim() &&
@@ -604,8 +645,8 @@
       }
 
       ['orderInput','codeInput'].forEach(id=>{
-        const el=document.getElementById(id);
-        el.addEventListener('keyup', e=>{ if (e.key==='Enter') search(); });
+        const el = document.getElementById(id);
+        el.addEventListener('keyup', e => { if (e.key === 'Enter') search(); });
       });
     });
   </script>
