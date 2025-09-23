@@ -444,7 +444,7 @@
 
     async function fetchOrderData(order, code) {
       const API_URL = 'https://script.google.com/macros/s/AKfycbyS49YKVe0FWqWrDXOpQUvFXbvZFyxYvGahjQv_P-aRu2B0xKOXMTcJksuLKwopoeZX/exec'; // Replace with your URL
-      if (!API_URL || API_URL.includes('https://script.google.com/macros/s/AKfycbyS49YKVe0FWqWrDXOpQUvFXbvZFyxYvGahjQv_P-aRu2B0xKOXMTcJksuLKwopoeZX/exec')) return {error:'API_URL not configured.'};
+      if (!API_URL || API_URL.includes('YOUR_SCRIPT_ID')) return {error:'API_URL not configured.'};
       const url=`${API_URL}?order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}`;
       const controller=new AbortController();
       const timeout=setTimeout(()=>controller.abort(),TIMEOUT_MS);
@@ -492,13 +492,62 @@
       }
 
       const summaryGrid = wrapper.querySelector('.summary-grid');
-      summaryGrid.innerHTML=`
-        <div class="field"><div class="label">Order #</div><div class="value">${o.OrderNumber||'-'}</div></div>
-        <div class="field"><div class="label">Customer</div><div class="value">${o.CustomerName||'-'}</div></div>
-        <div class="field"><div class="label">Status</div><div class="value">${o.CurrentStatus||'-'}</div></div>
-        <div class="field"><div class="label">Location</div><div class="value">${o.CurrentLocation||'-'}</div></div>
-        <div class="field"><div class="label">Delivery Person</div><div class="value">${o.DeliveryPerson||'-'}</div></div>
-        <div class="field"><div class="label">Last Update</div><div class="value">${formatDate(o.LastUpdate)||'-'}</div></div>`;
+      // inside render(resp) after `const o = resp.order; ... const wrapper = ...`
+function firstNonEmpty(obj, keys, fallback='') {
+  for (let k of keys) {
+    if (!obj) continue;
+    const v = obj[k];
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v);
+  }
+  return fallback;
+}
+
+// sanitize small helper
+function norm(s) {
+  if (s === undefined || s === null) return '';
+  return String(s).trim();
+}
+
+// try a bunch of common property names (adjust depending on your API)
+let loc = firstNonEmpty(o, [
+  'CurrentLocation','Location','LocationName','Address','current_location','location'
+], '');
+
+let dp = firstNonEmpty(o, [
+  'DeliveryPerson','DeliveryPersonName','Driver','DriverName','DeliveryAgent','delivery_person'
+], '');
+
+// If api placed the location into the delivery-person field (common mistake),
+// and the true location is empty, move it into location and clear delivery person.
+if ((!loc || loc === '') && dp && dp !== '') {
+  // Heuristic: if dp contains a comma or typical address tokens or digits, it's probably an address
+  const addressHints = ['St','Street','Rd','Road','Lane','Colombo',',','No.','#','/'];
+  const looksLikeAddress = addressHints.some(h => dp.includes(h)) || /\d/.test(dp);
+  if (looksLikeAddress) {
+    loc = dp;
+    dp = '';
+  }
+}
+
+// If both are identical keep one and clear the other to avoid duplicate information
+if (loc && dp && norm(loc) === norm(dp)) {
+  // keep as location and clear dp (so delivery person doesn't repeat location)
+  dp = '';
+}
+
+// Final display values (fall back to '-')
+const displayLoc = norm(loc) || '-';
+const displayDp  = norm(dp)  || '-';
+
+// Populate summary grid
+summaryGrid.innerHTML = `
+  <div class="field"><div class="label">Order #</div><div class="value">${o.OrderNumber||'-'}</div></div>
+  <div class="field"><div class="label">Customer</div><div class="value">${o.CustomerName||'-'}</div></div>
+  <div class="field"><div class="label">Status</div><div class="value">${o.CurrentStatus||o.Status||'-'}</div></div>
+  <div class="field"><div class="label">Location</div><div class="value">${displayLoc}</div></div>
+  <div class="field"><div class="label">Delivery Person</div><div class="value">${displayDp}</div></div>
+  <div class="field"><div class="label">Last Update</div><div class="value">${formatDate(o.LastUpdate||o.LastUpdated||o.UpdatedAt)||'-'}</div></div>`;
+
 
       document.getElementById('result').appendChild(wrapper);
       requestAnimationFrame(()=>adjustProgressFill(wrapper,idx));
