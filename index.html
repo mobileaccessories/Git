@@ -361,7 +361,7 @@ body.dimmed #pass-screen { visibility:hidden; }
         }).withFailureHandler(err=>{ setInFlight(false); resultMsg.textContent = 'Server error: ' + ((err && err.message) ? err.message : err); resultMsg.style.color = 'var(--danger)'; })
         .markAsDeliveredFromHtml(pending.order, pending.passcode, pending.scanTime || new Date().toISOString(), pending.location || '', deliveredBy);
       } else {
-        setTimeout(()=>{ setInFlight(false); resultMsg.textContent = 'Simulated: Order marked as delivered ✅'; resultMsg.style.color = 'var(--success)'; nextUpdateBtn.style.display = 'none'; closeResultBtn.textContent = 'Done'; }, 800);
+        setTimeout(()=>{ setInFlight(false); resultMsg.textContent = 'Simulated: Order marked as delivered '; resultMsg.style.color = 'var(--success)'; nextUpdateBtn.style.display = 'none'; closeResultBtn.textContent = 'Done'; }, 800);
       }
     });
 
