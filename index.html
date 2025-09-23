@@ -474,6 +474,62 @@
       document.getElementById('result').innerHTML='';
       showMessage(msg,'error');
     }
+// put these helper functions near the top of render() (or outside it)
+function firstNonEmpty(obj, keys, fallback='') {
+  for (let k of keys) {
+    if (!obj) continue;
+    const v = obj[k];
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v);
+  }
+  return fallback;
+}
+function norm(s){ return (s===undefined||s===null)?'':String(s).trim(); }
+
+// Heuristic to decide if a string is an address/location (not perfect but practical)
+function isLikelyLocation(s) {
+  if (!s) return false;
+  const txt = String(s).trim();
+  // obvious address characters or tokens
+  const addressHints = [',', '#', '/', '\\', 'No.', 'No', 'St', 'Street', 'Rd', 'Road', 'Ln', 'Lane', 'Colombo', 'Galle', 'Kandy', 'Negombo', 'Beruwala', 'Matara', 'Jaffna'];
+  if (/\d/.test(txt)) return true;                // contains numbers -> often an address
+  if (addressHints.some(h => txt.includes(h))) return true;
+  // long multi-part string (3+ words) likely address; short (1-2 words) could be name
+  const words = txt.split(/\s+/);
+  if (words.length >= 3) return true;
+  // if it contains punctuation commonly in addresses
+  if (/[.,]/.test(txt) && txt.length > 6) return true;
+  return false;
+}
+
+// --- then inside render(resp) where you previously did summaryGrid.innerHTML = `...` ---
+console.log('ORDER RAW RESPONSE:', resp); // inspect this in DevTools to map actual fields
+
+const o = resp.order || {}; // existing mapping
+// try multiple likely property names for each field
+let loc = firstNonEmpty(o, ['CurrentLocation','Location','LocationName','Address','current_location','location','Current_Location']);
+let dp  = firstNonEmpty(o, ['DeliveryPerson','DeliveryPersonName','Driver','DriverName','DeliveryAgent','delivery_person','driver_name','Agent']);
+
+// if dp looks like location and location is empty -> move dp -> location
+if ((!loc || loc === '') && dp && isLikelyLocation(dp)) {
+  loc = dp;
+  dp = '';
+}
+
+// if both equal, clear dp to avoid duplication
+if (loc && dp && norm(loc) === norm(dp)) dp = '';
+
+// final display fallback
+const displayLoc = norm(loc) || '-';
+const displayDp  = norm(dp)  || '-';
+
+// populate summary grid
+summaryGrid.innerHTML = `
+  <div class="field"><div class="label">Order #</div><div class="value">${o.OrderNumber||o.orderNumber||o.Order_Id||'-'}</div></div>
+  <div class="field"><div class="label">Customer</div><div class="value">${o.CustomerName||o.customer||o.customerName||'-'}</div></div>
+  <div class="field"><div class="label">Status</div><div class="value">${o.CurrentStatus||o.Status||o.status||'-'}</div></div>
+  <div class="field"><div class="label">Location</div><div class="value">${displayLoc}</div></div>
+  <div class="field"><div class="label">Delivery Person</div><div class="value">${displayDp}</div></div>
+  <div class="field"><div class="label">Last Update</div><div class="value">${formatDate(o.LastUpdate||o.LastUpdated||o.UpdatedAt)||'-'}</div></div>`;
 
     function render(resp) {
       document.getElementById('result').innerHTML='';
