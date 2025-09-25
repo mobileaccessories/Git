@@ -170,492 +170,433 @@
   <div id="modalRoot" style="display:none"></div>
 
   <script>
-    // === Configuration (set your Apps Script Web App URL here) ===
-    const API_URL = 'https://script.google.com/macros/s/AKfycbyL1NbhX3pYQipkXuVpNEZijNYHNOTpHnPbO9mJD_TktrapXogPxHsQ_8Riz1--QNWHcw/exec'; // <-- Replace with your URL
-    const STEPS = ['Order Placed','Picked up','Out for delivery','Delivered'];
-    const RETURN_STEPS = ['Return Requested','Pickup Scheduled','Return Picked Up','Inspection','Refund/Replacement','Replacement Shipped','Replacement Delivered'];
-    const TIMEOUT_MS = 12000;
+  // === Configuration (set your Apps Script Web App URL here) ===
+  const API_URL = 'https://script.google.com/macros/s/AKfycbyL1NbhX3pYQipkXuVpNEZijNYHNOTpHnPbO9mJD_TktrapXogPxHsQ_8Riz1--QNWHcw/exec'; // <-- Replace with your URL
+  const STEPS = ['Order Placed','Picked up','Out for delivery','Delivered'];
+  const RETURN_STEPS = ['Return Requested','Pickup Scheduled','Return Picked Up','Inspection','Refund/Replacement','Replacement Shipped','Replacement Delivered'];
+  const TIMEOUT_MS = 12000;
 
-    // --- Helpers ---
-    function formatDate(d) {
-      if (!d) return '—';
-      const dt = new Date(d);
-      if (isNaN(dt)) return '—';
-      return dt.toLocaleString(undefined,{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}).replace(/,/g,'');
+  // --- Helpers ---
+  function formatDate(d) {
+    if (!d) return '—';
+    const dt = new Date(d);
+    if (isNaN(dt)) return '—';
+    return dt.toLocaleString(undefined,{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}).replace(/,/g,'');
+  }
+
+  function showMessage(text, type='error'){
+    const area=document.getElementById('messageArea');
+    if(!text){ area.innerHTML=''; return; }
+    if(type==='error') area.innerHTML=`<div class="error-box" role="alert"><div>${text}</div></div>`;
+    else area.innerHTML=`<div class="success-box" role="status"><div>${text}</div></div>`;
+  }
+
+  function setFloatingLabels(){
+    document.querySelectorAll('.field-wrapper').forEach(w=>{
+      const input=w.querySelector('.floating-input'); if(!input) return;
+      const update = ()=>{ input.value.trim()? w.classList.add('has-value') : w.classList.remove('has-value'); };
+      update();
+      input.addEventListener('input', update);
+      input.addEventListener('focus', ()=>w.classList.add('has-value'));
+    });
+  }
+
+  function persistSession(order, code){
+    try{
+      localStorage.setItem('tracking_order',order);
+      localStorage.setItem('tracking_code',code);
+      const params=new URLSearchParams(window.location.search);
+      params.set('order',order);
+      params.set('code',code);
+      window.history.replaceState({},'',`${location.pathname}?${params}`);
+    }catch{}
+  }
+  function loadSession(){ try{ return { order: localStorage.getItem('tracking_order')||'', code: localStorage.getItem('tracking_code')||'' } }catch{return {order:'',code:''}} }
+
+  function canonicalStatusLocal(s){
+    if(!s) return '';
+    const t=s.toLowerCase().trim().replace(/\s+/g,' ');
+    if(['cancelled','canceled','cancel','order cancelled','order canceled'].includes(t)) return 'cancelled';
+    if(t.includes('cancel')) return 'cancelled';
+    if(t.includes('return')) return 'return';
+    return t;
+  }
+
+  function getStepIndex(status, steps){
+    if(!status) return 0;
+    const s=status.toLowerCase();
+    for(let i=0;i<steps.length;i++){
+      if(s.includes(steps[i].toLowerCase().split(' ')[0])) return i;
     }
+    if(s.includes('placed')) return 0;
+    if(s.includes('picked')) return 1;
+    if(s.includes('out')) return 2;
+    if(s.includes('deliver')) return 3;
+    return 0;
+  }
 
-    function showMessage(text, type='error'){
-      const area=document.getElementById('messageArea');
-      if(!text){area.innerHTML='';return}
-      if(type==='error') area.innerHTML=`<div class="error-box" role="alert"><div>${text}</div></div>`;
-      else area.innerHTML=`<div class="success-box" role="status"><div>${text}</div></div>`;
-    }
+  function renderProgressFor(steps, currentStatus, opts){
+    opts = opts || {};
+    const compact = !!opts.compact;
+    const idxRaw = getStepIndex(currentStatus, steps);
+    const isCancelled = canonicalStatusLocal(currentStatus)==='cancelled';
+    const idx = isCancelled? -1: idxRaw;
 
-    function setFloatingLabels(){
-      document.querySelectorAll('.field-wrapper').forEach(w=>{
-        const input=w.querySelector('.floating-input'); if(!input) return;
-        const update = ()=>{ input.value.trim()? w.classList.add('has-value') : w.classList.remove('has-value'); };
-        update();
-        input.addEventListener('input', update);
-        input.addEventListener('focus', ()=>w.classList.add('has-value'));
+    const container = document.createElement('div'); container.className = 'card';
+    const progressWrap = document.createElement('div'); progressWrap.className = compact? 'progress compact' : 'progress';
+    progressWrap.setAttribute('role','progressbar');
+    progressWrap.setAttribute('aria-valuemin','0');
+    progressWrap.setAttribute('aria-valuemax', String(Math.max(steps.length-1,1)));
+    progressWrap.setAttribute('aria-valuenow', String(Math.max(idx,0)));
+
+    const connector = document.createElement('div'); connector.className='connector'; connector.setAttribute('aria-hidden','true'); connector.innerHTML = '<div class="connector-fill" style="width:0%"></div>';
+    const stepsRow = document.createElement('div'); stepsRow.className='progress-steps';
+
+    steps.forEach((label,i)=>{
+      const step = document.createElement('div'); step.className='step'; step.dataset.index = i; step.dataset.label = label; step.tabIndex = 0;
+      const completed = !isCancelled && i<=idx;
+      if(completed) step.classList.add('completed');
+      if(i===idx) step.setAttribute('aria-current','true');
+      step.innerHTML = `<div class="step-circle">${completed? '&#10003;' : (i+1)}</div><div class="step-label">${label}</div>`;
+      step.addEventListener('click', ()=>{
+        showMessage(`${label} — ${completed? 'Completed' : 'Pending'}`, 'success');
+        setTimeout(()=>{ showMessage(''); }, 2000);
       });
+      step.addEventListener('keyup', (e)=>{ if(e.key==='Enter' || e.key===' ') step.click(); });
+      stepsRow.appendChild(step);
+    });
+
+    progressWrap.appendChild(connector);
+    progressWrap.appendChild(stepsRow);
+    container.appendChild(progressWrap);
+
+    return {el:container, idx, isCancelled};
+  }
+
+  function adjustProgressFill(container, idx){
+    const progressContainer = container.querySelector('.progress'); if(!progressContainer) return; const fill = progressContainer.querySelector('.connector-fill'); const steps = progressContainer.querySelectorAll('.step');
+    if(idx<0){ fill.style.width='0%'; steps.forEach(s=>s.classList.remove('completed')); return; }
+    if(!steps[idx]) return;
+    const bar = progressContainer.querySelector('.connector');
+    const barRect = bar.getBoundingClientRect();
+    const stepCircles = Array.from(steps).map(s=>s.querySelector('.step-circle'));
+    const centers = stepCircles.map(c=> ({left: c.getBoundingClientRect().left + c.getBoundingClientRect().width/2}));
+    const activeCenter = centers[idx].left - barRect.left;
+    let targetPx = Math.max(0, Math.min(barRect.width, activeCenter));
+    targetPx = Math.min(barRect.width, targetPx + (stepCircles[idx].getBoundingClientRect().width*0.15));
+    fill.style.width = (targetPx/barRect.width*100) + '%';
+    steps.forEach((s,i)=>{ if(i<=idx) s.classList.add('completed'); else s.classList.remove('completed'); s.removeAttribute('aria-current'); });
+    if(steps[idx]) steps[idx].setAttribute('aria-current','true');
+    progressContainer.setAttribute('aria-valuenow', String(idx));
+  }
+
+  function showLoadingSkeleton(){ const html=`<div class="card"><div class="placeholder" style="height:20px;width:60%;margin-bottom:16px;border-radius:6px"></div><div class="summary-grid"><div class="field"><div class="label placeholder" style="height:12px;width:80px"></div><div class="value placeholder" style="height:16px;width:120px;margin-top:6px"></div></div><div class="field"><div class="label placeholder" style="height:12px;width:80px"></div><div class="value placeholder" style="height:16px;width:120px;margin-top:6px"></div></div><div class="field"><div class="label placeholder" style="height:12px;width:80px"></div><div class="value placeholder" style="height:16px;width:120px;margin-top:6px"></div></div></div></div>`; document.getElementById('result').innerHTML=html; }
+
+  async function fetchOrderData(order, code){
+    if(!API_URL || API_URL.includes('YOUR_SCRIPT_ID')) return {error:'API_URL not configured.'};
+    const url=`${API_URL}?order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}`;
+    const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),TIMEOUT_MS);
+    try{
+      const response = await fetch(url,{method:'GET',mode:'cors',cache:'no-store',signal:controller.signal});
+      clearTimeout(timeout);
+      if(!response.ok) return {error:`HTTP ${response.status}`};
+      const data=await response.json();
+      return data;
+    }catch(err){
+      clearTimeout(timeout);
+      return {error:err.message||'Fetch failed'};
     }
+  }
 
-    function persistSession(order, code){
-      try{
-        localStorage.setItem('tracking_order',order);
-        localStorage.setItem('tracking_code',code);
-        const params=new URLSearchParams(window.location.search);
-        params.set('order',order);
-        params.set('code',code);
-        window.history.replaceState({},'',`${location.pathname}?${params}`);
-      }catch{}
+  // Main search
+  async function search(){
+    const order=document.getElementById('orderInput').value.trim();
+    const code=document.getElementById('codeInput').value.trim();
+    if(!order){ showMessage('Order number required.'); return; }
+    if(!code){ showMessage('Access code required.'); return; }
+    showMessage(''); showLoadingSkeleton();
+    const resp = await fetchOrderData(order, code);
+    if(!resp || resp.error){ renderError(resp?resp.error:'Unknown error'); return; }
+    persistSession(order, code);
+    saveLastResponse(order, resp);
+    render(resp);
+  }
+
+  function renderError(msg){ document.getElementById('result').innerHTML=''; showMessage(msg,'error'); }
+
+  function saveReturnData(order, data){ try{ localStorage.setItem('return_'+order, JSON.stringify(data)); }catch{} }
+  function loadReturnData(order){ try{ const d=localStorage.getItem('return_'+order); return d?JSON.parse(d):null }catch{return null } }
+
+  function saveCancelFlag(order, data){ try{ localStorage.setItem('cancel_'+order, JSON.stringify(data)); }catch{} }
+  function loadCancelFlag(order){ try{ const d=localStorage.getItem('cancel_'+order); return d?JSON.parse(d):null }catch{return null } }
+
+  function saveChat(order, chat){ try{ localStorage.setItem('chat_'+order, JSON.stringify(chat)); }catch{} }
+  function loadChat(order){ try{ const d=localStorage.getItem('chat_'+order); return d?JSON.parse(d):[] }catch{return [] } }
+
+  function render(resp){
+    document.getElementById('result').innerHTML='';
+    if(resp.error){ renderError(resp.error); return; }
+    const o = resp.order || {};
+    const orderKey = o.OrderNumber||o.order||'';
+
+    // ORDER card
+    const orderCard = document.createElement('div'); orderCard.className='card';
+    const orderAcc = document.createElement('div'); orderAcc.className='accordion';
+    const orderHeader = document.createElement('div'); orderHeader.className='acc-header';
+
+    const orderTitle = document.createElement('div');
+    orderTitle.innerHTML = `<div class="acc-title">Order — ${orderKey || '-'}</div><div class="acc-sub">${o.CurrentStatus||o.Status||'Status unknown'}</div>`;
+
+    const orderMeta = document.createElement('div'); orderMeta.className='meta-row';
+    orderMeta.innerHTML = `<button class="muted-btn" id="toggleOrderBtn">View details</button>`;
+
+    orderHeader.appendChild(orderTitle); orderHeader.appendChild(orderMeta);
+    orderAcc.appendChild(orderHeader);
+
+    const orderBody = document.createElement('div'); orderBody.className = 'acc-body';
+
+    const p = renderProgressFor(STEPS, o.CurrentStatus || o.Status || '');
+    const progressWrapper = document.createElement('div');
+    if(p.isCancelled){
+      const ban=document.createElement('div'); ban.className='cancel-banner'; ban.textContent='Order Cancelled';
+      progressWrapper.appendChild(ban);
     }
-    function loadSession(){ try{ return { order: localStorage.getItem('tracking_order')||'', code: localStorage.getItem('tracking_code')||'' } }catch{return {order:'',code:''}} }
+    progressWrapper.appendChild(p.el);
 
-    function canonicalStatusLocal(s){
-      if(!s) return '';
-      const t=s.toLowerCase().trim().replace(/\s+/g,' ');
-      if(['cancelled','canceled','cancel','order cancelled','order canceled'].includes(t)) return 'cancelled';
-      if(t.includes('cancel')) return 'cancelled';
-      if(t.includes('return')) return 'return';
-      return t;
-    }
+    const summaryGrid = document.createElement('div'); summaryGrid.className='summary-grid';
+    summaryGrid.innerHTML = `<div class="field"><div class="label">Order #</div><div class="value">${o.OrderNumber||o.order||'-'}</div></div>
+      <div class="field"><div class="label">Customer</div><div class="value">${o.CustomerName||o.customer||'-'}</div></div>
+      <div class="field"><div class="label">Status</div><div class="value">${o.CurrentStatus||o.Status||'-'}</div></div>
+      <div class="field"><div class="label">Location</div><div class="value">${o.CurrentLocation||o.location||'-'}</div></div>
+      <div class="field"><div class="label">Delivery Person</div><div class="value">${o.DeliveryPerson||'-'}</div></div>
+      <div class="field"><div class="label">Last Update</div><div class="value">${formatDate(o.LastUpdate||o.updatedAt)||'-'}</div></div>`;
 
-    function getStepIndex(status, steps){
-      if(!status) return 0;
-      const s=status.toLowerCase();
-      for(let i=0;i<steps.length;i++){
-        if(s.includes(steps[i].toLowerCase().split(' ')[0])) return i;
-      }
-      if(s.includes('placed')) return 0;
-      if(s.includes('picked')) return 1;
-      if(s.includes('out')) return 2;
-      if(s.includes('deliver')) return 3;
-      return 0;
-    }
+    const actionsWrap = document.createElement('div'); actionsWrap.className='actions';
+    const cancelBtn = document.createElement('button'); cancelBtn.className='cancel-btn'; cancelBtn.textContent='Cancel order'; cancelBtn.onclick = ()=> openCancelModal(o.OrderNumber||o.order||'', o.CurrentStatus||o.Status||'');
+    const openChatBtn = document.createElement('button'); openChatBtn.className='track-btn'; openChatBtn.textContent='Chat about this order'; openChatBtn.onclick = ()=>{ openChat(); const orderVal = o.OrderNumber||o.order||''; if(orderVal) document.getElementById('chatInput').placeholder = 'Message about order '+orderVal; }
+    actionsWrap.appendChild(cancelBtn); actionsWrap.appendChild(openChatBtn);
 
-    function renderProgressFor(steps, currentStatus, opts){
-      opts = opts || {};
-      const compact = !!opts.compact;
-      const idxRaw = getStepIndex(currentStatus, steps);
-      const isCancelled = canonicalStatusLocal(currentStatus)==='cancelled';
-      const idx = isCancelled? -1: idxRaw;
+    orderBody.appendChild(progressWrapper);
+    orderBody.appendChild(summaryGrid);
+    orderBody.appendChild(actionsWrap);
 
-      const container = document.createElement('div'); container.className = 'card';
-      const progressWrap = document.createElement('div'); progressWrap.className = compact? 'progress compact' : 'progress';
-      progressWrap.setAttribute('role','progressbar');
-      progressWrap.setAttribute('aria-valuemin','0');
-      progressWrap.setAttribute('aria-valuemax', String(Math.max(steps.length-1,1)));
-      progressWrap.setAttribute('aria-valuenow', String(Math.max(idx,0)));
+    orderAcc.appendChild(orderBody);
+    orderCard.appendChild(orderAcc);
+    document.getElementById('result').appendChild(orderCard);
 
-      const connector = document.createElement('div'); connector.className='connector'; connector.setAttribute('aria-hidden','true'); connector.innerHTML = '<div class="connector-fill" style="width:0%"></div>';
-      const stepsRow = document.createElement('div'); stepsRow.className='progress-steps';
+    orderHeader.querySelector('#toggleOrderBtn').addEventListener('click', ()=>{
+      orderAcc.classList.toggle('open');
+      const btn = orderHeader.querySelector('#toggleOrderBtn');
+      if(orderAcc.classList.contains('open')) btn.textContent = 'Hide details';
+      else btn.textContent = 'View details';
+      requestAnimationFrame(()=>adjustProgressFill(orderCard, p.idx));
+    });
 
-      steps.forEach((label,i)=>{
-        const step = document.createElement('div'); step.className='step'; step.dataset.index = i; step.dataset.label = label; step.tabIndex = 0;
-        const completed = !isCancelled && i<=idx;
-        if(completed) step.classList.add('completed');
-        if(i===idx) step.setAttribute('aria-current','true');
-        step.innerHTML = `<div class="step-circle">${completed? '&#10003;' : (i+1)}</div><div class="step-label">${label}</div>`;
-        step.addEventListener('click', ()=>{
-          showMessage(`${label} — ${completed? 'Completed' : 'Pending'}`, 'success');
-          setTimeout(()=>{ showMessage(''); }, 2000);
-        });
-        step.addEventListener('keyup', (e)=>{ if(e.key==='Enter' || e.key===' ') step.click(); });
-        stepsRow.appendChild(step);
-      });
+    // RETURN accordion
+    const returnData = loadReturnData(orderKey) || resp.return || null;
+    const retCard = document.createElement('div'); retCard.className='card';
+    const acc = document.createElement('div'); acc.className='accordion';
+    const accHeader = document.createElement('div'); accHeader.className='acc-header';
+    const accTitle = document.createElement('div'); accTitle.innerHTML = `<div class="acc-title">Return / Replacement</div><div class="acc-sub">${returnData? (returnData.Status||'') : 'No active return'}</div>`;
+    const accMeta = document.createElement('div'); accMeta.className='meta-row'; accMeta.innerHTML = `<button class="muted-btn" id="toggleReturnBtn">${returnData? 'View details' : 'Start return'}</button>`;
+    accHeader.appendChild(accTitle); accHeader.appendChild(accMeta);
+    acc.appendChild(accHeader);
 
-      progressWrap.appendChild(connector);
-      progressWrap.appendChild(stepsRow);
-      container.appendChild(progressWrap);
+    const accBody = document.createElement('div'); accBody.className='acc-body';
+    if(returnData){
+      const r = renderProgressFor(RETURN_STEPS, returnData.Status||returnData.current||'', {compact:true});
+      const rWrap = document.createElement('div'); rWrap.style.marginTop='8px'; rWrap.appendChild(r.el);
+      const grid = document.createElement('div'); grid.className='summary-grid'; grid.innerHTML = `<div class="field"><div class="label">Return ID</div><div class="value">${returnData.ReturnId||'-'}</div></div><div class="field"><div class="label">Type</div><div class="value">${returnData.Type||'-'}</div></div><div class="field"><div class="label">Status</div><div class="value">${returnData.Status||'-'}</div></div><div class="field"><div class="label">Requested</div><div class="value">${formatDate(returnData.RequestedAt)||'-'}</div></div>`;
+      rWrap.appendChild(grid);
 
-      return {el:container, idx, isCancelled};
-    }
-
-    function adjustProgressFill(container, idx){
-      const progressContainer = container.querySelector('.progress'); if(!progressContainer) return; const fill = progressContainer.querySelector('.connector-fill'); const steps = progressContainer.querySelectorAll('.step');
-      if(idx<0){ fill.style.width='0%'; steps.forEach(s=>s.classList.remove('completed')); return; }
-      if(!steps[idx]) return;
-      const bar = progressContainer.querySelector('.connector');
-      const barRect = bar.getBoundingClientRect();
-      const stepCircles = Array.from(steps).map(s=>s.querySelector('.step-circle'));
-      const centers = stepCircles.map(c=> ({left: c.getBoundingClientRect().left + c.getBoundingClientRect().width/2}));
-      const activeCenter = centers[idx].left - barRect.left;
-      let targetPx = Math.max(0, Math.min(barRect.width, activeCenter));
-      targetPx = Math.min(barRect.width, targetPx + (stepCircles[idx].getBoundingClientRect().width*0.15));
-      fill.style.width = (targetPx/barRect.width*100) + '%';
-      steps.forEach((s,i)=>{ if(i<=idx) s.classList.add('completed'); else s.classList.remove('completed'); s.removeAttribute('aria-current'); });
-      if(steps[idx]) steps[idx].setAttribute('aria-current','true');
-      progressContainer.setAttribute('aria-valuenow', String(idx));
-    }
-
-    function showLoadingSkeleton(){ const html=`<div class="card"><div class="placeholder" style="height:20px;width:60%;margin-bottom:16px;border-radius:6px"></div><div class="summary-grid"><div class="field"><div class="label placeholder" style="height:12px;width:80px"></div><div class="value placeholder" style="height:16px;width:120px;margin-top:6px"></div></div><div class="field"><div class="label placeholder" style="height:12px;width:80px"></div><div class="value placeholder" style="height:16px;width:120px;margin-top:6px"></div></div><div class="field"><div class="label placeholder" style="height:12px;width:80px"></div><div class="value placeholder" style="height:16px;width:120px;margin-top:6px"></div></div></div></div>`; document.getElementById('result').innerHTML=html; }
-
-    async function fetchOrderData(order, code){
-      if(!API_URL || API_URL.includes('YOUR_SCRIPT_ID')) return {error:'API_URL not configured.'};
-      const url=`${API_URL}?order=${encodeURIComponent(order)}&code=${encodeURIComponent(code)}`;
-      const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),TIMEOUT_MS);
-      try{
-        const response = await fetch(url,{method:'GET',mode:'cors',cache:'no-store',signal:controller.signal});
-        clearTimeout(timeout);
-        if(!response.ok) return {error:`HTTP ${response.status}`};
-        const data=await response.json();
-        return data;
-      }catch(err){
-        clearTimeout(timeout);
-        return {error:err.message||'Fetch failed'};
-      }
-    }
-
-    // Main search
-    async function search(){
-      const order=document.getElementById('orderInput').value.trim();
-      const code=document.getElementById('codeInput').value.trim();
-      if(!order){ showMessage('Order number required.'); return; }
-      if(!code){ showMessage('Access code required.'); return; }
-      showMessage(''); showLoadingSkeleton();
-      const resp = await fetchOrderData(order, code);
-      if(!resp || resp.error){ renderError(resp?resp.error:'Unknown error'); return; }
-      persistSession(order, code);
-      saveLastResponse(order, resp);
-      render(resp);
-    }
-
-    function renderError(msg){ document.getElementById('result').innerHTML=''; showMessage(msg,'error'); }
-
-    function saveReturnData(order, data){ try{ localStorage.setItem('return_'+order, JSON.stringify(data)); }catch{} }
-    function loadReturnData(order){ try{ const d=localStorage.getItem('return_'+order); return d?JSON.parse(d):null }catch{return null } }
-
-    function saveCancelFlag(order, data){ try{ localStorage.setItem('cancel_'+order, JSON.stringify(data)); }catch{} }
-    function loadCancelFlag(order){ try{ const d=localStorage.getItem('cancel_'+order); return d?JSON.parse(d):null }catch{return null } }
-
-    function saveChat(order, chat){ try{ localStorage.setItem('chat_'+order, JSON.stringify(chat)); }catch{} }
-    function loadChat(order){ try{ const d=localStorage.getItem('chat_'+order); return d?JSON.parse(d):[] }catch{return [] } }
-
-    function render(resp){
-      document.getElementById('result').innerHTML='';
-      if(resp.error){ renderError(resp.error); return; }
-      const o = resp.order || {};
-      const orderKey = o.OrderNumber||o.order||'';
-
-      // ORDER card
-      const orderCard = document.createElement('div'); orderCard.className='card';
-      const orderAcc = document.createElement('div'); orderAcc.className='accordion';
-      const orderHeader = document.createElement('div'); orderHeader.className='acc-header';
-
-      const orderTitle = document.createElement('div');
-      orderTitle.innerHTML = `<div class="acc-title">Order — ${orderKey || '-'}</div><div class="acc-sub">${o.CurrentStatus||o.Status||'Status unknown'}</div>`;
-
-      const orderMeta = document.createElement('div'); orderMeta.className='meta-row';
-      orderMeta.innerHTML = `<button class="muted-btn" id="toggleOrderBtn">View details</button>`;
-
-      orderHeader.appendChild(orderTitle); orderHeader.appendChild(orderMeta);
-      orderAcc.appendChild(orderHeader);
-
-      const orderBody = document.createElement('div'); orderBody.className = 'acc-body';
-
-      const p = renderProgressFor(STEPS, o.CurrentStatus || o.Status || '');
-      const progressWrapper = document.createElement('div');
-      if(p.isCancelled){
-        const ban=document.createElement('div'); ban.className='cancel-banner'; ban.textContent='Order Cancelled';
-        progressWrapper.appendChild(ban);
-      }
-      progressWrapper.appendChild(p.el);
-
-      const summaryGrid = document.createElement('div'); summaryGrid.className='summary-grid';
-      summaryGrid.innerHTML = `<div class="field"><div class="label">Order #</div><div class="value">${o.OrderNumber||o.order||'-'}</div></div>
-        <div class="field"><div class="label">Customer</div><div class="value">${o.CustomerName||o.customer||'-'}</div></div>
-        <div class="field"><div class="label">Status</div><div class="value">${o.CurrentStatus||o.Status||'-'}</div></div>
-        <div class="field"><div class="label">Location</div><div class="value">${o.CurrentLocation||o.location||'-'}</div></div>
-        <div class="field"><div class="label">Delivery Person</div><div class="value">${o.DeliveryPerson||'-'}</div></div>
-        <div class="field"><div class="label">Last Update</div><div class="value">${formatDate(o.LastUpdate||o.updatedAt)||'-'}</div></div>`;
-
-      const actionsWrap = document.createElement('div'); actionsWrap.className='actions';
-      const cancelBtn = document.createElement('button'); cancelBtn.className='cancel-btn'; cancelBtn.textContent='Cancel order'; cancelBtn.onclick = ()=> openCancelModal(o.OrderNumber||o.order||'', o.CurrentStatus||o.Status||'');
-      const openChatBtn = document.createElement('button'); openChatBtn.className='track-btn'; openChatBtn.textContent='Chat about this order'; openChatBtn.onclick = ()=>{ openChat(); const orderVal = o.OrderNumber||o.order||''; if(orderVal) document.getElementById('chatInput').placeholder = 'Message about order '+orderVal; }
-      actionsWrap.appendChild(cancelBtn); actionsWrap.appendChild(openChatBtn);
-
-      orderBody.appendChild(progressWrapper);
-      orderBody.appendChild(summaryGrid);
-      orderBody.appendChild(actionsWrap);
-
-      orderAcc.appendChild(orderBody);
-      orderCard.appendChild(orderAcc);
-      document.getElementById('result').appendChild(orderCard);
-
-      orderHeader.querySelector('#toggleOrderBtn').addEventListener('click', ()=>{
-        orderAcc.classList.toggle('open');
-        const btn = orderHeader.querySelector('#toggleOrderBtn');
-        if(orderAcc.classList.contains('open')) btn.textContent = 'Hide details';
-        else btn.textContent = 'View details';
-        requestAnimationFrame(()=>adjustProgressFill(orderCard, p.idx));
-      });
-
-      // RETURN accordion
-      const returnData = loadReturnData(orderKey) || resp.return || null;
-      const retCard = document.createElement('div'); retCard.className='card';
-      const acc = document.createElement('div'); acc.className='accordion';
-      const accHeader = document.createElement('div'); accHeader.className='acc-header';
-      const accTitle = document.createElement('div'); accTitle.innerHTML = `<div class="acc-title">Return / Replacement</div><div class="acc-sub">${returnData? (returnData.Status||'') : 'No active return'}</div>`;
-      const accMeta = document.createElement('div'); accMeta.className='meta-row'; accMeta.innerHTML = `<button class="muted-btn" id="toggleReturnBtn">${returnData? 'View details' : 'Start return'}</button>`;
-      accHeader.appendChild(accTitle); accHeader.appendChild(accMeta);
-      acc.appendChild(accHeader);
-
-      const accBody = document.createElement('div'); accBody.className='acc-body';
-      if(returnData){
-        const r = renderProgressFor(RETURN_STEPS, returnData.Status||returnData.current||'', {compact:true});
-        const rWrap = document.createElement('div'); rWrap.style.marginTop='8px'; rWrap.appendChild(r.el);
-        const grid = document.createElement('div'); grid.className='summary-grid'; grid.innerHTML = `<div class="field"><div class="label">Return ID</div><div class="value">${returnData.ReturnId||'-'}</div></div><div class="field"><div class="label">Type</div><div class="value">${returnData.Type||'-'}</div></div><div class="field"><div class="label">Status</div><div class="value">${returnData.Status||'-'}</div></div><div class="field"><div class="label">Requested</div><div class="value">${formatDate(returnData.RequestedAt)||'-'}</div></div>`;
-        rWrap.appendChild(grid);
-
-        if(returnData.History && returnData.History.length){
-          const dList = document.createElement('div'); dList.className='timeline';
-          returnData.History.forEach(h=>{
-            const det = document.createElement('details');
-            det.innerHTML = `<summary><div style="display:flex;justify-content:space-between;gap:12px"><div>${h.Status||'-'}</div><div class="small">${formatDate(h.Timestamp||h.ts)}</div></div></summary><div class="history-detail">${h.Notes||''}</div><div class="history-meta">By: ${h.UpdatedBy||h.by||'Customer'}</div>`;
-            dList.appendChild(det);
-          });
-          rWrap.appendChild(dList);
-        }
-
-        accBody.appendChild(rWrap);
-        acc.appendChild(accBody);
-        retCard.appendChild(acc);
-        document.getElementById('result').appendChild(retCard);
-
-        accHeader.querySelector('#toggleReturnBtn').addEventListener('click', ()=>{ acc.classList.toggle('open'); requestAnimationFrame(()=>adjustProgressFill(retCard, r.idx)); if(acc.classList.contains('open')) accHeader.querySelector('#toggleReturnBtn').textContent = 'Hide details'; else accHeader.querySelector('#toggleReturnBtn').textContent = 'View details'; });
-
-        requestAnimationFrame(()=>adjustProgressFill(retCard, r.idx));
-
-      } else {
-        accBody.innerHTML = `<div class="small">No return on file for this order. You can start a return or replacement.</div>`;
-        acc.appendChild(accBody);
-        retCard.appendChild(acc);
-        document.getElementById('result').appendChild(retCard);
-        accHeader.querySelector('#toggleReturnBtn').addEventListener('click', ()=>{ openReturnModal(orderKey); });
-      }
-
-      // timeline
-      if(resp.history && resp.history.length){
-        const histCard = document.createElement('div'); histCard.className='card';
-        const title = document.createElement('div'); title.className='label'; title.style.marginBottom='8px'; title.style.fontSize='0.75rem'; title.style.textTransform='uppercase'; title.style.fontWeight='700'; title.textContent='Timeline'; histCard.appendChild(title);
-        const timeline = document.createElement('div'); timeline.className='timeline';
-        resp.history.forEach(h=>{
+      if(returnData.History && returnData.History.length){
+        const dList = document.createElement('div'); dList.className='timeline';
+        returnData.History.forEach(h=>{
           const det = document.createElement('details');
-          det.innerHTML = `<summary><div style="display:flex;justify-content:space-between;gap:12px"><div><strong>${h.Status||'-'}</strong> — ${h.Location||'-'}</div><div class="small">${formatDate(h.Timestamp||h.time)}</div></div></summary><div class="history-detail">${h.Notes||''}</div><div class="history-meta">By: ${h.UpdatedBy||h.by||'-'}</div>`;
-          timeline.appendChild(det);
+          det.innerHTML = `<summary><div style="display:flex;justify-content:space-between;gap:12px"><div>${h.Status||'-'}</div><div class="small">${formatDate(h.Timestamp||h.ts)}</div></div></summary><div class="history-detail">${h.Notes||''}</div><div class="history-meta">By: ${h.UpdatedBy||h.by||'Customer'}</div>`;
+          dList.appendChild(det);
         });
-        histCard.appendChild(timeline);
-        document.getElementById('result').appendChild(histCard);
+        rWrap.appendChild(dList);
       }
 
-      // chat context
-      if(orderKey){ const chat = loadChat(orderKey); if(chat && chat.length){ renderChat(orderKey); } }
+      accBody.appendChild(rWrap);
+      acc.appendChild(accBody);
+      retCard.appendChild(acc);
+      document.getElementById('result').appendChild(retCard);
+
+      accHeader.querySelector('#toggleReturnBtn').addEventListener('click', ()=>{ acc.classList.toggle('open'); requestAnimationFrame(()=>adjustProgressFill(retCard, r.idx)); if(acc.classList.contains('open')) accHeader.querySelector('#toggleReturnBtn').textContent = 'Hide details'; else accHeader.querySelector('#toggleReturnBtn').textContent = 'View details'; });
+
+      requestAnimationFrame(()=>adjustProgressFill(retCard, r.idx));
+
+    } else {
+      accBody.innerHTML = `<div class="small">No return on file for this order. You can start a return or replacement.</div>`;
+      acc.appendChild(accBody);
+      retCard.appendChild(acc);
+      document.getElementById('result').appendChild(retCard);
+      accHeader.querySelector('#toggleReturnBtn').addEventListener('click', ()=>{ openReturnModal(orderKey); });
     }
 
-    // Cancel modal UI (single implementation)
-    function openCancelModal(order, currentStatus){
-      const root=document.getElementById('modalRoot');
-      const alreadyCancelled = !!loadCancelFlag(order) || (currentStatus && currentStatus.toLowerCase().includes('cancel'));
-      if(alreadyCancelled){
-        root.innerHTML = `<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal"><h3>Cancel order</h3><div class="small">Order: <strong>${order||'-'}</strong></div><div style="margin-top:12px" class="small">This order is already cancelled.</div><div class="actions" style="margin-top:14px"><button class="muted-btn" onclick="closeModal()">Close</button></div></div></div>`;
-        root.style.display='block';
+    // timeline
+    if(resp.history && resp.history.length){
+      const histCard = document.createElement('div'); histCard.className='card';
+      const title = document.createElement('div'); title.className='label'; title.style.marginBottom='8px'; title.style.fontSize='0.75rem'; title.style.textTransform='uppercase'; title.style.fontWeight='700'; title.textContent='Timeline'; histCard.appendChild(title);
+      const timeline = document.createElement('div'); timeline.className='timeline';
+      resp.history.forEach(h=>{
+        const det = document.createElement('details');
+        det.innerHTML = `<summary><div style="display:flex;justify-content:space-between;gap:12px"><div><strong>${h.Status||'-'}</strong> — ${h.Location||'-'}</div><div class="small">${formatDate(h.Timestamp||h.time)}</div></div></summary><div class="history-detail">${h.Notes||''}</div><div class="history-meta">By: ${h.UpdatedBy||h.by||'-'}</div>`;
+        timeline.appendChild(det);
+      });
+      histCard.appendChild(timeline);
+      document.getElementById('result').appendChild(histCard);
+    }
+
+    // chat context
+    if(orderKey){ const chat = loadChat(orderKey); if(chat && chat.length){ renderChat(orderKey); } }
+  }
+
+  // Cancel modal UI (single implementation)
+  function openCancelModal(order, currentStatus){
+    const root=document.getElementById('modalRoot');
+    const alreadyCancelled = !!loadCancelFlag(order) || (currentStatus && currentStatus.toLowerCase().includes('cancel'));
+    if(alreadyCancelled){
+      root.innerHTML = `<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal"><h3>Cancel order</h3><div class="small">Order: <strong>${order||'-'}</strong></div><div style="margin-top:12px" class="small">This order is already cancelled.</div><div class="actions" style="margin-top:14px"><button class="muted-btn" onclick="closeModal()">Close</button></div></div></div>`;
+      root.style.display='block';
+      return;
+    }
+    root.innerHTML = `<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal"><h3>Cancel order</h3><div class="small">Order: <strong>${order||'-'}</strong></div><div style="margin-top:12px"><label class="small">Reason (optional)</label><textarea id="cancelReason" style="width:100%;min-height:86px;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:6px" placeholder="Tell us why you want to cancel (optional)"></textarea></div><div class="actions"><button class="track-btn cancel-btn" id="confirmCancelBtn">Confirm cancel</button><button class="muted-btn" onclick="closeModal()">Keep order</button></div></div></div>`;
+    root.style.display='block';
+    const btn = document.getElementById('confirmCancelBtn');
+    if(btn) btn.addEventListener('click', ()=> submitCancelRequest(order));
+  }
+
+  function closeModal(){ const root=document.getElementById('modalRoot'); root.innerHTML=''; root.style.display='none'; }
+
+  // submit cancellation to server (single, form-encoded implementation)
+  async function submitCancelRequest(order) {
+    const reasonEl = document.getElementById('cancelReason');
+    const reason = reasonEl ? reasonEl.value.trim() : '';
+    const accessCode = (document.getElementById('codeInput') && document.getElementById('codeInput').value.trim()) || '';
+
+    if (!order) { alert('Order missing'); return; }
+
+    const btn = document.getElementById('confirmCancelBtn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
+
+    try {
+      // Use form-encoded body to avoid preflight OPTIONS
+      const payload = new URLSearchParams();
+      payload.append('action', 'cancel');
+      payload.append('orderNumber', order);
+      payload.append('accessCode', accessCode);
+      payload.append('reason', reason);
+      payload.append('updatedBy', 'Customer');
+
+      const res = await fetch(API_URL, {
+        method: 'POST',
+        mode: 'cors',
+        cache: 'no-store',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+        body: payload.toString(),
+        credentials: 'omit'
+      });
+
+      if (btn) { btn.disabled = false; btn.textContent = 'Confirm cancel'; }
+
+      if (!res.ok) {
+        const txt = await res.text().catch(()=>null);
+        const msg = txt || `HTTP ${res.status}`;
+        alert('Cancel failed: ' + msg);
         return;
       }
-      root.innerHTML = `<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal"><h3>Cancel order</h3><div class="small">Order: <strong>${order||'-'}</strong></div><div style="margin-top:12px"><label class="small">Reason (optional)</label><textarea id="cancelReason" style="width:100%;min-height:86px;padding:10px;border-radius:8px;border:1px solid var(--border);margin-top:6px" placeholder="Tell us why you want to cancel (optional)"></textarea></div><div class="actions"><button class="track-btn cancel-btn" id="confirmCancelBtn">Confirm cancel</button><button class="muted-btn" onclick="closeModal()">Keep order</button></div></div></div>`;
-      root.style.display='block';
-      const btn = document.getElementById('confirmCancelBtn');
-      if(btn) btn.addEventListener('click', ()=> submitCancelRequest(order));
-    }
 
-    function closeModal(){ const root=document.getElementById('modalRoot'); root.innerHTML=''; root.style.display='none'; }
-
-    // submit cancellation to server
-    async function submitCancelRequest(order) {
-  const reasonEl = document.getElementById('cancelReason');
-  const reason = reasonEl ? reasonEl.value.trim() : '';
-  const accessCode = (document.getElementById('codeInput') && document.getElementById('codeInput').value.trim()) || '';
-
-  if (!order) { alert('Order missing'); return; }
-
-  const btn = document.getElementById('confirmCancelBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
-
-  try {
-    // Use form-encoded body to avoid preflight OPTIONS
-    const payload = new URLSearchParams();
-    payload.append('action', 'cancel');
-    payload.append('orderNumber', order);
-    payload.append('accessCode', accessCode);
-    payload.append('reason', reason);
-    payload.append('updatedBy', 'Customer');
-
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      mode: 'cors',
-      cache: 'no-store',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-      body: payload.toString(),
-      credentials: 'omit'
-    });
-
-    if (btn) { btn.disabled = false; btn.textContent = 'Confirm cancel'; }
-
-    if (!res.ok) {
-      const txt = await res.text().catch(()=>null);
-      const msg = txt || `HTTP ${res.status}`;
-      alert('Cancel failed: ' + msg);
-      return;
-    }
-
-    const json = await res.json().catch(()=>null);
-    if (!json) { alert('No response from server'); return; }
-    if (json.error) {
-      alert('Cancel failed: ' + json.error);
-      return;
-    }
-
-    // success
-    closeModal();
-    showMessage('Order cancelled successfully. Refreshing view...','success');
-
-    // optimistic local update + refresh
-    const now = new Date().toISOString();
-    saveCancelFlag(order, { cancelledAt: now, reason: reason });
-    try {
-      if (document.getElementById('orderInput').value.trim() && document.getElementById('codeInput').value.trim()) {
-        setTimeout(()=> { search(); }, 600);
+      const json = await res.json().catch(()=>null);
+      if (!json) { alert('No response from server'); return; }
+      if (json.error) {
+        alert('Cancel failed: ' + json.error);
+        return;
       }
-    } catch(e){}
 
-  } catch (err) {
-    if (btn) { btn.disabled = false; btn.textContent = 'Confirm cancel'; }
-    alert('Cancel request failed: ' + (err && err.message ? err.message : String(err)));
-  }
-}
+      // success
+      closeModal();
+      showMessage('Order cancelled successfully. Refreshing view...','success');
 
-
-      const btn = document.getElementById('confirmCancelBtn');
-      if (btn) { btn.disabled = true; btn.textContent = 'Cancelling…'; }
-
+      // optimistic local update + refresh
+      const now = new Date().toISOString();
+      saveCancelFlag(order, { cancelledAt: now, reason: reason });
       try {
-        const payload = {
-          action: 'cancel',
-          orderNumber: order,
-          accessCode: accessCode,
-          reason: reason,
-          updatedBy: 'Customer'
-        };
-
-        const res = await fetch(API_URL, {
-          method: 'POST',
-          mode: 'cors',
-          cache: 'no-store',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          credentials: 'omit'
-        });
-
-        // re-enable button
-        if (btn) { btn.disabled = false; btn.textContent = 'Confirm cancel'; }
-
-        if (!res.ok) {
-          const txt = await res.text().catch(()=>null);
-          const msg = txt || `HTTP ${res.status}`;
-          alert('Cancel failed: ' + msg);
-          return;
+        if (document.getElementById('orderInput').value.trim() && document.getElementById('codeInput').value.trim()) {
+          setTimeout(()=> { search(); }, 600);
         }
-
-        const json = await res.json().catch(()=>null);
-        if (!json) { alert('No response from server'); return; }
-        if (json.error) {
-          alert('Cancel failed: ' + json.error);
-          return;
-        }
-
-        // success
-        closeModal();
-        showMessage('Order cancelled successfully. Refreshing view...','success');
-
-        // save local cancelled flag and update optimistic UI
-        const now = new Date().toISOString();
-        saveCancelFlag(order, { cancelledAt: now, reason: reason });
-        // refresh the client UI — attempt to re-run search() if inputs present
-        try {
-          if (document.getElementById('orderInput').value.trim() && document.getElementById('codeInput').value.trim()) {
-            setTimeout(()=> { search(); }, 600);
-          }
-        } catch(e){
-          // ignore
-        }
-
-      } catch (err) {
-        if (btn) { btn.disabled = false; btn.textContent = 'Confirm cancel'; }
-        alert('Cancel request failed: ' + (err && err.message ? err.message : String(err)));
-      }
+      } catch(e){}
+    } catch (err) {
+      if (btn) { btn.disabled = false; btn.textContent = 'Confirm cancel'; }
+      alert('Cancel request failed: ' + (err && err.message ? err.message : String(err)));
     }
+  }
 
-    // Return stubs (so clicking "Start return" won't throw) — replace with real flow if/when available
-    function openReturnModal(order){
-      const root=document.getElementById('modalRoot');
-      root.innerHTML = `<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal"><h3>Start Return / Replacement</h3><div class="small">Order: <strong>${order||'-'}</strong></div><div style="margin-top:12px" class="small">Return flow is not enabled in this build. Please contact support to proceed.</div><div class="actions" style="margin-top:14px"><button class="muted-btn" onclick="closeModal()">Close</button></div></div></div>`;
-      root.style.display='block';
-    }
-    function submitReturnRequest(){ alert('Return flow not implemented.'); }
+  // Return stubs (so clicking "Start return" won't throw) — replace with real flow if/when available
+  function openReturnModal(order){
+    const root=document.getElementById('modalRoot');
+    root.innerHTML = `<div class="modal-backdrop" role="dialog" aria-modal="true"><div class="modal"><h3>Start Return / Replacement</h3><div class="small">Order: <strong>${order||'-'}</strong></div><div style="margin-top:12px" class="small">Return flow is not enabled in this build. Please contact support to proceed.</div><div class="actions" style="margin-top:14px"><button class="muted-btn" onclick="closeModal()">Close</button></div></div></div>`;
+    root.style.display='block';
+  }
+  function submitReturnRequest(){ alert('Return flow not implemented.'); }
 
-    // Chat functions
-    function toggleChat(){ const panel=document.getElementById('chatPanel'); if(panel.style.display==='none' || !panel.style.display){ openChat(); } else closeChat(); }
-    function openChat(){ const panel=document.getElementById('chatPanel'); panel.style.display='flex'; document.getElementById('chatInput').focus(); renderChat((document.getElementById('orderInput').value.trim())||''); }
-    function closeChat(){ document.getElementById('chatPanel').style.display='none'; }
+  // Chat functions
+  function toggleChat(){ const panel=document.getElementById('chatPanel'); if(panel.style.display==='none' || !panel.style.display){ openChat(); } else closeChat(); }
+  function openChat(){ const panel=document.getElementById('chatPanel'); panel.style.display='flex'; document.getElementById('chatInput').focus(); renderChat((document.getElementById('orderInput').value.trim())||''); }
+  function closeChat(){ document.getElementById('chatPanel').style.display='none'; }
 
-    function renderChat(order){ const container=document.getElementById('chatMessages'); const orderKey = order || (document.getElementById('orderInput').value.trim()); const chat = orderKey? loadChat(orderKey) : []; container.innerHTML=''; if(!chat.length){ container.innerHTML = '<div class="chat-placeholder">No messages yet. Ask about your order or general queries.</div>'; return; } chat.forEach(m=>{ const el = document.createElement('div'); el.className='msg '+(m.from==='user'?'user':'bot'); el.innerHTML = `<div style="font-size:0.8rem;opacity:0.9;margin-bottom:4px">${m.from==='user'?'You':'Support'}</div><div>${m.text}</div><div class="small" style="opacity:0.6;margin-top:6px">${formatDate(m.ts)}</div>`; container.appendChild(el); }); container.scrollTop = container.scrollHeight; }
+  function renderChat(order){ const container=document.getElementById('chatMessages'); const orderKey = order || (document.getElementById('orderInput').value.trim()); const chat = orderKey? loadChat(orderKey) : []; container.innerHTML=''; if(!chat.length){ container.innerHTML = '<div class="chat-placeholder">No messages yet. Ask about your order or general queries.</div>'; return; } chat.forEach(m=>{ const el = document.createElement('div'); el.className='msg '+(m.from==='user'?'user':'bot'); el.innerHTML = `<div style="font-size:0.8rem;opacity:0.9;margin-bottom:4px">${m.from==='user'?'You':'Support'}</div><div>${m.text}</div><div class="small" style="opacity:0.6;margin-top:6px">${formatDate(m.ts)}</div>`; container.appendChild(el); }); container.scrollTop = container.scrollHeight; }
 
-    function sendChat(){ const input=document.getElementById('chatInput'); const text=input.value.trim(); if(!text) return; const orderKey = (document.getElementById('orderInput').value.trim())||''; const msg = { from:'user', text, ts: new Date().toISOString() }; const key = orderKey || 'guest'; const chat = loadChat(key); chat.push(msg); saveChat(key, chat); renderChat(key); input.value=''; setTimeout(()=>{ const bot = { from:'bot', text: cannedReply(text, orderKey), ts: new Date().toISOString() }; const nowChat = loadChat(key); nowChat.push(bot); saveChat(key, nowChat); renderChat(key); }, 700); }
+  function sendChat(){ const input=document.getElementById('chatInput'); const text=input.value.trim(); if(!text) return; const orderKey = (document.getElementById('orderInput').value.trim())||''; const msg = { from:'user', text, ts: new Date().toISOString() }; const key = orderKey || 'guest'; const chat = loadChat(key); chat.push(msg); saveChat(key, chat); renderChat(key); input.value=''; setTimeout(()=>{ const bot = { from:'bot', text: cannedReply(text, orderKey), ts: new Date().toISOString() }; const nowChat = loadChat(key); nowChat.push(bot); saveChat(key, nowChat); renderChat(key); }, 700); }
 
-    function cannedReply(userText, order){ const t = userText.toLowerCase(); if(t.includes('return')||t.includes('refund')||t.includes('replace')){ if(order) return `I can help with a return or replacement for order ${order}. Click "Start return / replacement" in the order summary to begin, or tell me the reason.`; return 'I can help start a return. Please provide your order number.'; } if(t.includes('where')||t.includes('status')||t.includes('deliver')){ if(order) return `I see order ${order}. If you tracked it already, the live timeline shows the latest updates. Would you like me to refresh it?`; return 'Please provide your order number and code and I will fetch the latest status.'; } return `Thanks — our support team will review this. For order-specific actions, include the order number (e.g. ${order||'12345'}) and we'll assist you faster.`; }
+  function cannedReply(userText, order){ const t = userText.toLowerCase(); if(t.includes('return')||t.includes('refund')||t.includes('replace')){ if(order) return `I can help with a return or replacement for order ${order}. Click "Start return / replacement" in the order summary to begin, or tell me the reason.`; return 'I can help start a return. Please provide your order number.'; } if(t.includes('where')||t.includes('status')||t.includes('deliver')){ if(order) return `I see order ${order}. If you tracked it already, the live timeline shows the latest updates. Would you like me to refresh it?`; return 'Please provide your order number and code and I will fetch the latest status.'; } return `Thanks — our support team will review this. For order-specific actions, include the order number (e.g. ${order||'12345'}) and we'll assist you faster.`; }
 
-    function saveLastResponse(order, data){ try{ sessionStorage.setItem('last_response_'+order, JSON.stringify(data)); }catch{} }
+  function saveLastResponse(order, data){ try{ sessionStorage.setItem('last_response_'+order, JSON.stringify(data)); }catch{} }
 
-    // Initialization
-    window.addEventListener('DOMContentLoaded',()=>{
-      setFloatingLabels();
+  // Initialization
+  window.addEventListener('DOMContentLoaded',()=>{
+    setFloatingLabels();
 
-      const params = new URLSearchParams(window.location.search);
-      const orderParam = params.get('order')||'';
-      const codeParam = params.get('code')||'';
-      const session = loadSession();
+    const params = new URLSearchParams(window.location.search);
+    const orderParam = params.get('order')||'';
+    const codeParam = params.get('code')||'';
+    const session = loadSession();
 
-      if(orderParam) document.getElementById('orderInput').value = orderParam;
-      else if(session.order) document.getElementById('orderInput').value = session.order;
-      if(codeParam) document.getElementById('codeInput').value = codeParam;
-      else if(session.code) document.getElementById('codeInput').value = session.code;
+    if(orderParam) document.getElementById('orderInput').value = orderParam;
+    else if(session.order) document.getElementById('orderInput').value = session.order;
+    if(codeParam) document.getElementById('codeInput').value = codeParam;
+    else if(session.code) document.getElementById('codeInput').value = session.code;
 
-      document.querySelectorAll('.field-wrapper').forEach(w=>{ const input=w.querySelector('.floating-input'); if(input) input.dispatchEvent(new Event('input')); });
+    document.querySelectorAll('.field-wrapper').forEach(w=>{ const input=w.querySelector('.floating-input'); if(input) input.dispatchEvent(new Event('input')); });
 
-      // Track button wiring
-      document.getElementById('trackBtn').addEventListener('click', search);
+    // Track button wiring
+    const trackBtn = document.getElementById('trackBtn');
+    if (trackBtn) trackBtn.addEventListener('click', search);
 
-      if(document.getElementById('orderInput').value.trim() && document.getElementById('codeInput').value.trim()) search();
+    if(document.getElementById('orderInput').value.trim() && document.getElementById('codeInput').value.trim()) search();
 
-      ['orderInput','codeInput'].forEach(id=>{ const el=document.getElementById(id); el.addEventListener('keyup', e=>{ if(e.key==='Enter') search(); }); });
+    ['orderInput','codeInput'].forEach(id=>{ const el=document.getElementById(id); if(el) el.addEventListener('keyup', e=>{ if(e.key==='Enter') search(); }); });
 
-      // chat shortcuts
-      document.getElementById('chatInput').addEventListener('keyup', e=>{ if(e.key==='Enter') sendChat(); });
+    // chat shortcuts
+    const chatInput = document.getElementById('chatInput');
+    if (chatInput) chatInput.addEventListener('keyup', e=>{ if(e.key==='Enter') sendChat(); });
 
-      // re-adjust progress fills on resize
-      window.addEventListener('resize', ()=>{ document.querySelectorAll('.card').forEach(c=>{ const pf = c.querySelector('.progress'); if(pf){ const idx = Number(pf.getAttribute('aria-valuenow'))||0; requestAnimationFrame(()=>adjustProgressFill(c, idx)); } }); });
-    });
+    // re-adjust progress fills on resize
+    window.addEventListener('resize', ()=>{ document.querySelectorAll('.card').forEach(c=>{ const pf = c.querySelector('.progress'); if(pf){ const idx = Number(pf.getAttribute('aria-valuenow'))||0; requestAnimationFrame(()=>adjustProgressFill(c, idx)); } }); });
+  });
 
-    // Expose some globals used inline in HTML
-    window.openReturnModal = openReturnModal;
-    window.closeModal = closeModal;
-    window.submitReturnRequest = submitReturnRequest;
-    window.openChat = openChat;
-    window.toggleChat = toggleChat;
-    window.sendChat = sendChat;
-    window.openCancelModal = openCancelModal;
-    window.submitCancelRequest = submitCancelRequest;
-  </script>
+  // Expose some globals used inline in HTML
+  window.openReturnModal = openReturnModal;
+  window.closeModal = closeModal;
+  window.submitReturnRequest = submitReturnRequest;
+  window.openChat = openChat;
+  window.toggleChat = toggleChat;
+  window.sendChat = sendChat;
+  window.openCancelModal = openCancelModal;
+  window.submitCancelRequest = submitCancelRequest;
+</script>
+
 </body>
 </html>
